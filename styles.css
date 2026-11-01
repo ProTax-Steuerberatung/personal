@@ -75,6 +75,7 @@ main{padding:24px max(24px,env(safe-area-inset-right,0px)) 110px 24px;display:fl
 /* ---------- Buttons ---------- */
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:42px;padding:0 20px;font:500 13px/1 var(--font);letter-spacing:.1em;text-transform:uppercase;
   border:1.5px solid var(--ink);border-radius:var(--r);cursor:pointer;background:transparent;color:var(--text);white-space:nowrap}
+a.btn{text-decoration:none}
 .btn:hover{background:var(--bg2)}
 .btn:focus-visible,.nav:focus-visible,.iconbtn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .btn:disabled{opacity:.35;cursor:default}
@@ -168,6 +169,20 @@ table.tbl{width:100%;border-collapse:collapse;font-size:14px}
 .print-only{display:none}
 .sign{display:grid;grid-template-columns:1fr 1fr;gap:40px;margin-top:40px}
 .sign div{border-top:1px solid #000;padding-top:4px;font-size:11px}
+
+/* ---------- Personalakte ---------- */
+.drop{display:flex;flex-direction:column;align-items:center;gap:8px;position:relative;border:1.5px dashed var(--field);border-radius:12px;padding:26px 16px;text-align:center;color:var(--text2);cursor:pointer;font-size:15px}
+.drop:hover,.drop.over{border-color:var(--ink);background:var(--bg2)}
+.drop svg{width:30px;height:30px;color:var(--ink)}
+.drop input{position:absolute;inset:0;opacity:0;cursor:pointer}
+.doclink{display:inline-flex;align-items:center;gap:8px;color:var(--text);text-decoration:none;font-weight:500;word-break:break-word}
+.doclink:hover span{text-decoration:underline}
+.doclink svg{width:18px;height:18px;flex-shrink:0;color:var(--ink)}
+.akte-body{padding:6px 0 10px}
+.akte-sec + .akte-sec{border-top:1px solid var(--border)}
+.akte-h{padding:16px 22px 6px;font-size:13px;font-weight:500;letter-spacing:.08em;text-transform:uppercase;color:var(--text2)}
+.akte-empty{padding:2px 22px 14px}
+.steps{margin:14px 0 0 20px;display:flex;flex-direction:column;gap:6px;font-size:14px}
 
 /* ---------- Anmeldung ---------- */
 body.login-mode .shell{grid-template-columns:1fr}

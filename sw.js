@@ -1,5 +1,5 @@
 /* Service Worker: hält nur die App-Dateien vor. Daten (Microsoft Graph, Anmeldung) werden nie zwischengespeichert. */
-const CACHE = 'ze-v9';
+const CACHE = 'ze-v10';
 const FILES = ['./', 'index.html', 'styles.css', 'config.js', 'calc.js', 'app.js', 'lib/msal-browser.min.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/logo.png'];
 self.addEventListener('install', e => { self.skipWaiting(); e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).catch(() => {})); });
 self.addEventListener('activate', e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())); });

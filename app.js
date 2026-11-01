@@ -1,7 +1,7 @@
 'use strict';
 /* Zeiterfassung ProTax – Oberfläche, Anmeldung (Microsoft 365) und Speicher (SharePoint-Listen über Microsoft Graph) */
 const CFG = window.ZE_CONFIG || {}, Z = window.ZC;
-const APP_VERSION = 'ProTax Personal v.1.2';
+const APP_VERSION = 'ProTax Personal v.1.3';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const WD = ['', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
@@ -35,8 +35,18 @@ const LISTS = {
     upn: ['ZeUpn', 'text', true, 'E-Mail (Anmeldename)'], name: ['ZeName', 'text', false, 'Name'], wochenstunden: ['ZeWochenstunden', 'number', false, 'Wochenstunden'],
     arbeitstage: ['ZeArbeitstage', 'text', false, 'Arbeitstage (1=Mo … 7=So)'], urlaubstage: ['ZeUrlaubstage', 'number', false, 'Urlaubstage pro Jahr'],
     restVorjahr: ['ZeRestVorjahr', 'number', false, 'Resturlaub Vorjahr'], saldoStart: ['ZeSaldoStart', 'text', false, 'Saldo ab Datum'],
-    saldoStunden: ['ZeSaldoStunden', 'number', false, 'Saldo-Startwert (Stunden)'], eintritt: ['ZeEintritt', 'text', false, 'Eintritt'], austritt: ['ZeAustritt', 'text', false, 'Austritt'], leitung: ['ZeLeitung', 'bool', false, 'Leitung'] } }
+    saldoStunden: ['ZeSaldoStunden', 'number', false, 'Saldo-Startwert (Stunden)'], eintritt: ['ZeEintritt', 'text', false, 'Eintritt'], austritt: ['ZeAustritt', 'text', false, 'Austritt'], leitung: ['ZeLeitung', 'bool', false, 'Leitung'],
+    akteDrive: ['ZeAkteDrive', 'text', false, 'Personalakte Bibliothek'], akteId: ['ZeAkteId', 'text', false, 'Personalakte Ordner'], eingangId: ['ZeEingangId', 'text', false, 'Personalakte Eingang'] } }
 };
+const AKTE = { name: 'ZE_Personalakte', kategorien: ['Vertrag & Nachträge', 'Zeugnisse & Qualifikationen', 'Bescheinigungen', 'Unterweisungen', 'Sonstiges'],
+  columns: [{ name: 'ZeKategorie', displayName: 'Kategorie', text: {} }, { name: 'ZeDokDatum', displayName: 'Dokumentdatum', text: {} }, { name: 'ZeBemerkung', displayName: 'Bemerkung', text: { allowMultipleLines: true } }] };
+const MAX_UPLOAD_MB = 25;
+function akteItem(it, ort) {
+  const f = it.listItem?.fields || {};
+  return { id: it.id, name: it.name, size: it.size || 0, folder: !!it.folder, ort, webUrl: it.webUrl || '', download: it['@microsoft.graph.downloadUrl'] || '',
+    kategorie: f.ZeKategorie || '', dokDatum: f.ZeDokDatum || '', bemerkung: f.ZeBemerkung || '',
+    by: it.createdBy?.user?.displayName || '', at: it.createdDateTime || '' };
+}
 function fromItem(key, it) {
   const f = it.fields || {}, o = { id: String(it.id) };
   for (const [k, [col, typ]] of Object.entries(LISTS[key].fields)) {
@@ -118,6 +128,7 @@ class GraphStore {
     const ls = await this.g('GET', `/sites/${this.site.id}/lists?$select=id,displayName,name&$top=200`);
     this.lists = {};
     for (const [k, d] of Object.entries(LISTS)) { const f = ls.value.find(x => x.displayName === d.name || x.name === d.name); if (f) this.lists[k] = f.id; }
+    const ak = ls.value.find(x => x.displayName === AKTE.name || x.name === AKTE.name); this.akteList = ak ? ak.id : null;
     return { site: this.site.webUrl, missing: Object.keys(LISTS).filter(k => !this.lists[k]).map(k => LISTS[k].name) };
   }
   async setup() {
@@ -166,6 +177,70 @@ class GraphStore {
 }
 
 /* ======================= Speicher: Demo (nur dieser Browser) ======================= */
+/* ---- Personalakte (SharePoint-Dokumentbibliothek) ---- */
+GraphStore.prototype.raw = async function (method, path, body, contentType) {
+  const tok = await this.token(this.scopes);
+  const r = await fetch('https://graph.microsoft.com/v1.0' + path, { method, headers: { Authorization: 'Bearer ' + tok, 'Content-Type': contentType || 'application/octet-stream' }, body });
+  if (!r.ok) { let msg = 'HTTP ' + r.status; try { const j = await r.json(); msg = j.error?.message || msg; } catch (e) {} const err = new Error(msg); err.status = r.status; throw err; }
+  return r.status === 204 ? null : r.json();
+};
+// Fehlende Spalten in bestehenden Listen ergänzen (z. B. nach einem Update der App)
+GraphStore.prototype.ensureColumns = async function (key) {
+  const have = new Set(((await this.g('GET', `/sites/${this.site.id}/lists/${this.lists[key]}/columns?$select=name&$top=200`)).value || []).map(c => c.name));
+  for (const c of columnDefs(key, false)) if (!have.has(c.name)) await this.g('POST', `/sites/${this.site.id}/lists/${this.lists[key]}/columns`, c, ['Sites.Manage.All']);
+};
+GraphStore.prototype.akteStatus = async function () {
+  if (!this.akteList) return { status: 'missing' };
+  if (!this.akteDrive) this.akteDrive = (await this.g('GET', `/sites/${this.site.id}/lists/${this.akteList}/drive?$select=id`)).id;
+  // Sicherheitsprüfung: Die Bibliothek darf nicht für die Gruppen Mitglieder/Besucher freigegeben sein
+  let unsafe = false;
+  try {
+    const p = await this.g('GET', `/drives/${this.akteDrive}/root/permissions`);
+    unsafe = (p.value || []).some(x => /mitglieder|besucher|members|visitors/i.test(x.grantedToV2?.siteGroup?.displayName || x.grantedTo?.user?.displayName || ''));
+  } catch (e) { /* Prüfung nicht möglich – kein Abbruch */ }
+  return { status: unsafe ? 'unsafe' : 'ok', drive: this.akteDrive };
+};
+GraphStore.prototype.akteSetup = async function () {
+  const res = await this.g('POST', `/sites/${this.site.id}/lists`, { displayName: AKTE.name, columns: AKTE.columns, list: { template: 'documentLibrary' } }, ['Sites.Manage.All']);
+  this.akteList = res.id; this.akteDrive = null;
+};
+GraphStore.prototype.akteEnsureFolder = async function (ma) {
+  await this.ensureColumns('ma');
+  const d = this.akteDrive, mk = async (parent, name) => {
+    try { return await this.g('POST', `/drives/${d}/items/${parent}/children`, { name, folder: {}, '@microsoft.graph.conflictBehavior': 'fail' }); }
+    catch (e) { if (e.status === 409) return this.g('GET', `/drives/${d}/items/${parent}:/${encodeURIComponent(name)}`); throw e; }
+  };
+  const root = await this.g('GET', `/drives/${d}/root?$select=id`);
+  const f = await mk(root.id, ma.upn), ein = await mk(f.id, 'Eingang');
+  const invite = (id, role) => this.g('POST', `/drives/${d}/items/${id}/invite`, { requireSignIn: true, sendInvitation: false, roles: [role], recipients: [{ email: ma.upn }] });
+  await invite(f.id, 'read'); await invite(ein.id, 'write');
+  const patch = { akteDrive: d, akteId: f.id, eingangId: ein.id };
+  await this.update('ma', ma.id, patch);
+  return patch;
+};
+GraphStore.prototype.akteList_ = async function (ma) {
+  const q = '?$expand=listItem($expand=fields)&$top=500';
+  const [a, e] = await Promise.all([this.g('GET', `/drives/${ma.akteDrive}/items/${ma.akteId}/children${q}`), this.g('GET', `/drives/${ma.akteDrive}/items/${ma.eingangId}/children${q}`)]);
+  return [...a.value.filter(x => !x.folder).map(x => akteItem(x, 'akte')), ...e.value.filter(x => !x.folder).map(x => akteItem(x, 'eingang'))];
+};
+GraphStore.prototype.akteUpload = async function (ma, ort, file, meta) {
+  const parent = ort === 'eingang' ? ma.eingangId : ma.akteId;
+  const it = await this.raw('PUT', `/drives/${ma.akteDrive}/items/${parent}:/${encodeURIComponent(file.name)}:/content?@microsoft.graph.conflictBehavior=rename`, file, file.type || 'application/octet-stream');
+  await this.g('PATCH', `/drives/${ma.akteDrive}/items/${it.id}/listItem/fields`, { ZeKategorie: meta.kategorie, ZeDokDatum: meta.dokDatum, ZeBemerkung: meta.bemerkung });
+};
+GraphStore.prototype.akteMove = async function (ma, item, kategorie) {
+  await this.g('PATCH', `/drives/${ma.akteDrive}/items/${item.id}`, { parentReference: { id: ma.akteId } });
+  await this.g('PATCH', `/drives/${ma.akteDrive}/items/${item.id}/listItem/fields`, { ZeKategorie: kategorie });
+};
+GraphStore.prototype.akteSetKategorie = async function (ma, item, kategorie) {
+  await this.g('PATCH', `/drives/${ma.akteDrive}/items/${item.id}/listItem/fields`, { ZeKategorie: kategorie });
+};
+GraphStore.prototype.akteDelete = async function (ma, item) { await this.g('DELETE', `/drives/${ma.akteDrive}/items/${item.id}`); };
+GraphStore.prototype.akteOpen = async function (ma, item) {
+  const it = await this.g('GET', `/drives/${ma.akteDrive}/items/${item.id}?$select=id,webUrl,@microsoft.graph.downloadUrl`);
+  return { view: it.webUrl, download: it['@microsoft.graph.downloadUrl'] };
+};
+
 class DemoStore {
   constructor() {
     this.k = 'ze_demo_v1';
@@ -221,10 +296,26 @@ class DemoStore {
   async versions(key, id) { return (this.d.hist[key + id] || []).slice().reverse(); }
   async setup() {}
   reset() { localStorage.removeItem(this.k); }
+  _ak() { return (this.d.akte = this.d.akte || { lib: false, files: [], n: 1 }); }
+  async ensureColumns() {}
+  async akteStatus() { return { status: this._ak().lib ? 'ok' : 'missing', drive: 'demo' }; }
+  async akteSetup() { this._ak().lib = true; this.save(); }
+  async akteEnsureFolder(ma) { const p = { akteDrive: 'demo', akteId: 'f-' + ma.id, eingangId: 'e-' + ma.id }; await this.update('ma', ma.id, p); return p; }
+  async akteList_(ma) { return this._ak().files.filter(f => f.upn === ma.upn).map(f => ({ ...f, webUrl: f.data, download: f.data })); }
+  async akteUpload(ma, ort, file, meta) {
+    if (file.size > 1.5 * 1024 * 1024) throw new Error('Im Demo-Modus nur Dateien bis 1,5 MB (Browser-Speicher). Im Echtbetrieb bis ' + MAX_UPLOAD_MB + ' MB.');
+    const data = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
+    const ak = this._ak(); ak.files.push({ id: 'd' + (ak.n++), upn: ma.upn, ort, name: file.name, size: file.size, data, kategorie: meta.kategorie, dokDatum: meta.dokDatum, bemerkung: meta.bemerkung, by: S.me.name, at: new Date().toISOString() });
+    this.save();
+  }
+  async akteMove(ma, item, kategorie) { const f = this._ak().files.find(x => x.id === item.id); f.ort = 'akte'; f.kategorie = kategorie; this.save(); }
+  async akteSetKategorie(ma, item, kategorie) { this._ak().files.find(x => x.id === item.id).kategorie = kategorie; this.save(); }
+  async akteDelete(ma, item) { const ak = this._ak(); ak.files = ak.files.filter(x => x.id !== item.id); this.save(); }
+  async akteOpen(ma, item) { const f = this._ak().files.find(x => x.id === item.id); return { view: f.data, download: f.data }; }
 }
 
 /* ======================= Zustand ======================= */
-const S = { store: null, me: null, leitung: false, ma: [], buchungen: [], abw: [], loadedFrom: null, view: 'heute', month: today().slice(0, 7), viewUpn: null, info: null, missing: [], ort: (CFG.orte || ['Büro'])[0], busy: false };
+const S = { store: null, me: null, leitung: false, ma: [], buchungen: [], abw: [], loadedFrom: null, view: 'heute', month: today().slice(0, 7), viewUpn: null, info: null, missing: [], ort: (CFG.orte || ['Büro'])[0], busy: false, akte: null };
 const myMa = () => S.ma.find(m => m.upn === S.me.upn);
 const maBy = upn => S.ma.find(m => m.upn === upn);
 const dataFor = upn => ({ buchungen: S.buchungen.filter(b => b.upn === upn), abw: S.abw });
@@ -322,6 +413,8 @@ const ICON = {
   monat: '<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4M8 14h3M8 17h6"/>',
   abw: '<path d="M4 19h16M7 19c0-5 2.5-9 5-9s5 4 5 9"/><path d="M12 10V5M9.5 6.5 12 5l2.5 1.5"/>',
   team: '<circle cx="9" cy="9" r="3"/><path d="M3.5 19c.6-3 2.8-5 5.5-5s4.9 2 5.5 5"/><circle cx="17" cy="10" r="2.3"/><path d="M15.8 14.3c2.4.2 4 1.9 4.6 4.7"/>',
+  akte: '<path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/><path d="M8 13h8"/>',
+  upload: '<path d="M12 16V5M7.5 9.5 12 5l4.5 4.5"/><path d="M5 19h14"/>',
   stamm: '<rect x="3.5" y="5" width="17" height="14" rx="2"/><circle cx="9" cy="11" r="2.2"/><path d="M5.8 16.5c.5-1.8 1.7-2.7 3.2-2.7s2.7.9 3.2 2.7M14.5 10h3.5M14.5 13.5h3.5"/>',
   refresh: '<path d="M19 12a7 7 0 1 1-2.05-4.95"/><path d="M19 5v4h-4"/>',
   logout: '<path d="M14 5h4a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-4"/><path d="M10 16l-4-4 4-4M6 12h9"/>',
@@ -331,10 +424,10 @@ const ICON = {
 };
 const svg = k => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[k]}</svg>`;
 const initials = n => String(n || '?').split(/\s+/).filter(Boolean).map(x => x[0]).slice(0, 2).join('').toUpperCase();
-const VIEW_LABEL = { heute: 'Heute', monat: 'Monatsnachweis', abw: 'Abwesenheiten', team: 'Team', stamm: 'Stammdaten' };
+const VIEW_LABEL = { heute: 'Heute', monat: 'Monatsnachweis', abw: 'Abwesenheiten', akte: 'Personalakte', team: 'Team', stamm: 'Stammdaten' };
 function renderSide() {
   const offen = S.abw.filter(a => a.status === 'beantragt').length;
-  const items = [['heute'], ['monat'], ['abw']];
+  const items = [['heute'], ['monat'], ['abw'], ['akte']];
   if (S.leitung) items.push(['team', offen], ['stamm']);
   const m = myMa();
   $('#side').innerHTML = `<div class="user"><div class="avatar">${esc(initials(m ? m.name : S.me.name))}</div><div><div class="n">${esc(m ? m.name : S.me.name)}</div><div class="r">${S.leitung ? 'Leitung' : 'Mitarbeiter/in'}</div></div></div>`
@@ -373,11 +466,11 @@ function render() {
   if (!S.me) return;
   renderSide();
   if (S.missing.length && S.view !== 'stamm') { $('#main').innerHTML = viewMissing(); renderTimer(); return; }
-  const v = { heute: viewHeute, monat: viewMonat, abw: viewAbw, team: viewTeam, stamm: viewStamm }[S.view] || viewHeute;
+  const v = { heute: viewHeute, monat: viewMonat, abw: viewAbw, akte: viewAkte, team: viewTeam, stamm: viewStamm }[S.view] || viewHeute;
   $('#main').innerHTML = `<div class="crumb no-print">${esc(CFG.firma || 'ProTax')}<i></i>${VIEW_LABEL[S.view] || ''}</div>` + v() + `<div class="ver-m no-print">${esc(APP_VERSION)}</div>`;
   renderTimer();
 }
-const go = v => { S.view = v; if (v === 'monat' && !S.viewUpn) S.viewUpn = S.me.upn; render(); window.scrollTo(0, 0); };
+const go = v => { S.view = v; if ((v === 'monat' || v === 'akte') && !S.viewUpn) S.viewUpn = S.me.upn; if (v === 'akte') S.akte = null; render(); window.scrollTo(0, 0); };
 const reload = () => act(async () => { await loadAll(); }, 'Aktualisiert');
 
 function viewMissing() {
@@ -638,6 +731,91 @@ function abwStatus(id, status) {
     const f = { status, entschVon: S.me.name, entschAm: new Date().toISOString() };
     await S.store.update('abw', id, f); Object.assign(a, f);
   }, 'Status: ' + status);
+}
+
+/* ---------- Personalakte ---------- */
+const fmtSize = n => n >= 1048576 ? (n / 1048576).toFixed(1).replace('.', ',') + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
+async function loadAkte(upn) {
+  const ma = maBy(upn);
+  S.akte = { upn, loading: true }; render();
+  try {
+    if (S.leitung) {
+      const st = await S.store.akteStatus();
+      if (st.status !== 'ok') { S.akte = { upn, status: st.status }; return render(); }
+    }
+    if (!ma || !ma.akteId) { S.akte = { upn, status: 'nofolder' }; return render(); }
+    S.akte = { upn, status: 'ok', items: await S.store.akteList_(ma) };
+  } catch (e) { console.error(e); S.akte = { upn, status: 'error', error: e.message || String(e) }; }
+  render();
+}
+function viewAkte() {
+  const upn = S.leitung ? (S.viewUpn || S.me.upn) : S.me.upn, m = maBy(upn), A = S.akte;
+  if (!m && !S.leitung) return noMa();
+  const sel = S.leitung && S.ma.length ? `<select class="inp" style="width:auto" onchange="S.viewUpn=this.value;loadAkte(this.value)">${S.ma.map(x => `<option value="${esc(x.upn)}" ${x.upn === upn ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>` : '';
+  const head = `<div class="card-h"><div><div class="card-t">Personalakte${m ? ' · ' + esc(m.name) : ''}</div><div class="muted sm">${S.leitung ? 'Dokumente ablegen und eingereichte Unterlagen übernehmen' : 'Deine Unterlagen – nur für dich und die Kanzleileitung sichtbar'}</div></div>${sel}</div>`;
+  if (!A || A.upn !== upn) { setTimeout(() => loadAkte(upn)); return `<div class="card">${head}<div class="empty">Lade Personalakte …</div></div>`; }
+  if (A.loading) return `<div class="card">${head}<div class="empty">Lade Personalakte …</div></div>`;
+  if (A.status === 'error') return `<div class="card">${head}<div class="card-b"><div class="banner err">${esc(A.error)}</div><div class="actions"><button class="btn" onclick="loadAkte('${esc(upn)}')">Erneut versuchen</button></div></div></div>`;
+  if (A.status === 'missing') return `<div class="card">${head}<div class="card-b">
+    <p>Für die Personalakten wird in SharePoint eine eigene Dokumentbibliothek <b>${AKTE.name}</b> angelegt. Pro Mitarbeiter/in entsteht darin ein Ordner mit eigenen Rechten.</p>
+    <div class="actions"><button class="btn primary" onclick="akteSetupAction()">Personalakte einrichten</button></div></div></div>`;
+  if (A.status === 'unsafe') return `<div class="card">${head}<div class="card-b">
+    <div class="banner warn"><b>Bibliothek noch nicht abgesichert.</b> Die Bibliothek ${AKTE.name} ist noch für alle Mitglieder der Website freigegeben. Bevor Akten angelegt werden, bitte in SharePoint einschränken:</div>
+    <ol class="steps"><li>SharePoint-Website öffnen → <b>Websiteinhalte</b> → bei <b>${AKTE.name}</b> auf <b>⋯ → Einstellungen</b></li>
+    <li><b>Berechtigungen für diese Dokumentbibliothek</b> → <b>Berechtigungsvererbung beenden</b></li>
+    <li>Haken bei <b>Mitglieder von …</b> und <b>Besucher von …</b> setzen → <b>Benutzerberechtigungen entfernen</b></li>
+    <li>Übrig bleibt nur <b>Besitzer von …</b> (Vollzugriff)</li></ol>
+    <div class="actions"><button class="btn primary" onclick="loadAkte('${esc(upn)}')">Erneut prüfen</button></div></div></div>`;
+  if (A.status === 'nofolder') return `<div class="card">${head}<div class="card-b">${S.leitung
+    ? `<p>Für ${esc(m.name)} ist noch keine Personalakte angelegt. Beim Anlegen entsteht ein Ordner, den nur die Leitung und ${esc(m.name)} sehen, plus ein Eingang zum Einreichen von Unterlagen.</p><div class="actions"><button class="btn primary" onclick="akteFolderAction('${esc(upn)}')">Akte anlegen</button></div>`
+    : '<div class="empty">Deine Personalakte ist noch nicht eingerichtet. Die Kanzleileitung legt sie an.</div>'}</div></div>`;
+  const items = A.items || [], eingang = items.filter(i => i.ort === 'eingang'), akte = items.filter(i => i.ort === 'akte');
+  const kats = AKTE.kategorien, katOf = i => kats.includes(i.kategorie) ? i.kategorie : 'Sonstiges';
+  const link = i => `<a class="doclink" href="${esc(i.webUrl)}" target="_blank" rel="noopener" ${String(i.webUrl).startsWith('data:') ? `download="${esc(i.name)}"` : ''}>${svg('akte')}<span>${esc(i.name)}</span></a>`;
+  const meta = i => `${i.dokDatum ? de(i.dokDatum) : '—'}`;
+  const by = i => `<div class="sm">${esc(i.by)}</div><div class="muted sm">${i.at ? new Date(i.at).toLocaleDateString('de-DE') : ''} · ${fmtSize(i.size)}</div>`;
+  const upload = `<div class="card">${head}<div class="card-b"><div class="akte-h" style="padding:0 0 12px">${S.leitung ? 'Dokument ablegen' : 'Dokument einreichen'}</div>
+    <label class="drop" id="ak-drop">${svg('upload')}<span id="ak-fname">Datei hier ablegen oder klicken (PDF, Bild, Word · max. ${MAX_UPLOAD_MB} MB)</span>
+      <input type="file" id="ak-file" multiple onchange="akteFileChosen(this)"></label>
+    <div class="fg2" style="margin-top:18px">
+      <div class="f"><label>Kategorie</label><select id="ak-kat">${kats.map(k => `<option>${esc(k)}</option>`).join('')}</select></div>
+      <div class="f"><label>Dokumentdatum</label><input type="date" id="ak-datum"></div>
+      <div class="f span2"><label>Bemerkung (optional)</label><input id="ak-bem" placeholder="z. B. Nachtrag Arbeitszeit ab 01.01."></div></div>
+    ${S.leitung ? '' : '<div class="muted sm" style="margin-top:10px">Eingereichte Dokumente prüft die Kanzleileitung und übernimmt sie in deine Akte.</div>'}
+    <div class="actions"><button class="btn primary" onclick="akteUploadAction('${esc(upn)}')">${S.leitung ? 'Hochladen' : 'Einreichen'}</button></div></div></div>`;
+  const eingangCard = eingang.length || !S.leitung ? `<div class="card"><div class="card-h"><div class="card-t">${S.leitung ? 'Eingereicht – zu prüfen' : 'Eingereicht'} <span class="muted">(${eingang.length})</span></div></div>
+    ${eingang.length ? `<div class="tblwrap"><table class="tbl"><thead><tr><th>Dokument</th><th>Kategorie</th><th>Datum</th><th>Eingereicht</th><th></th></tr></thead><tbody>
+    ${eingang.map(i => `<tr><td>${link(i)}${i.bemerkung ? `<div class="muted sm">${esc(i.bemerkung)}</div>` : ''}</td>
+      <td>${S.leitung ? `<select class="inp" id="mv-${esc(i.id)}" style="width:auto">${kats.map(k => `<option ${k === katOf(i) ? 'selected' : ''}>${esc(k)}</option>`).join('')}</select>` : esc(katOf(i))}</td>
+      <td>${meta(i)}</td><td>${by(i)}</td>
+      <td style="text-align:right;white-space:nowrap">${S.leitung ? `<button class="btn sm primary" onclick="akteMoveAction('${esc(upn)}','${esc(i.id)}')">Übernehmen</button> <button class="btn sm danger" onclick="akteDeleteAction('${esc(upn)}','${esc(i.id)}')">Löschen</button>` : '<span class="badge b-warn">wird geprüft</span>'}</td></tr>`).join('')}
+    </tbody></table></div>` : '<div class="empty">Nichts eingereicht.</div>'}</div>` : '';
+  const sections = kats.map(k => { const fs = akte.filter(i => katOf(i) === k).sort((x, y) => (y.dokDatum || y.at).localeCompare(x.dokDatum || x.at));
+    return `<div class="akte-sec"><div class="akte-h">${esc(k)} <span class="muted">(${fs.length})</span></div>${fs.length ? `<div class="tblwrap"><table class="tbl"><tbody>
+      ${fs.map(i => `<tr><td>${link(i)}${i.bemerkung ? `<div class="muted sm">${esc(i.bemerkung)}</div>` : ''}</td><td class="hide-m" style="width:110px">${meta(i)}</td><td class="hide-m" style="width:190px">${by(i)}</td>
+        <td style="text-align:right;white-space:nowrap;width:1%"><a class="btn sm" href="${esc(i.download || i.webUrl)}" ${String(i.download || i.webUrl).startsWith('data:') ? `download="${esc(i.name)}"` : 'target="_blank" rel="noopener"'}>Download</a>${S.leitung ? ` <button class="btn sm danger" onclick="akteDeleteAction('${esc(upn)}','${esc(i.id)}')">Löschen</button>` : ''}</td></tr>`).join('')}
+      </tbody></table></div>` : '<div class="muted sm akte-empty">Keine Dokumente</div>'}</div>`; }).join('');
+  return `${upload}${eingangCard}<div class="card"><div class="card-h"><div class="card-t">Dokumente <span class="muted">(${akte.length})</span></div></div><div class="akte-body">${sections}</div></div>`;
+}
+function akteFileChosen(inp) { const n = [...inp.files].map(f => f.name).join(', '); $('#ak-fname').textContent = n || 'Datei hier ablegen oder klicken'; }
+const akteSetupAction = () => act(async () => { await S.store.akteSetup(); S.akte = null; }, 'Bibliothek angelegt');
+const akteFolderAction = upn => act(async () => { const m = maBy(upn); Object.assign(m, await S.store.akteEnsureFolder(m)); S.akte = null; }, 'Personalakte angelegt');
+function akteUploadAction(upn) {
+  const m = maBy(upn), files = [...($('#ak-file').files || [])];
+  if (!files.length) return toast('Bitte zuerst eine Datei auswählen', 'err');
+  const big = files.find(f => f.size > MAX_UPLOAD_MB * 1048576); if (big) return toast(`${big.name} ist größer als ${MAX_UPLOAD_MB} MB`, 'err');
+  const meta = { kategorie: $('#ak-kat').value, dokDatum: $('#ak-datum').value, bemerkung: $('#ak-bem').value.trim() };
+  act(async () => { for (const f of files) await S.store.akteUpload(m, S.leitung ? 'akte' : 'eingang', f, meta); S.akte = null; },
+    files.length + (files.length === 1 ? ' Dokument ' : ' Dokumente ') + (S.leitung ? 'abgelegt' : 'eingereicht'));
+}
+function akteMoveAction(upn, id) {
+  const m = maBy(upn), it = S.akte.items.find(x => x.id === id), k = $('#mv-' + CSS.escape(id)).value;
+  act(async () => { await S.store.akteMove(m, it, k); S.akte = null; }, 'In die Akte übernommen');
+}
+function akteDeleteAction(upn, id) {
+  const m = maBy(upn), it = S.akte.items.find(x => x.id === id);
+  if (!confirm(`„${it.name}“ löschen? Die Datei landet im SharePoint-Papierkorb.`)) return;
+  act(async () => { await S.store.akteDelete(m, it); S.akte = null; }, 'Gelöscht');
 }
 
 /* ---------- Team (Leitung) ---------- */
