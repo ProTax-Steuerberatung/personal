@@ -1,7 +1,7 @@
 'use strict';
 /* Zeiterfassung ProTax – Oberfläche, Anmeldung (Microsoft 365) und Speicher (SharePoint-Listen über Microsoft Graph) */
 const CFG = window.ZE_CONFIG || {}, Z = window.ZC;
-const APP_VERSION = 'ProTax Personal v.1.3';
+const APP_VERSION = 'ProTax Personal v.1.4';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const WD = ['', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
@@ -70,6 +70,13 @@ function toFields(key, obj, withTitle) {
   if (withTitle) f.Title = def.title(obj).slice(0, 255);
   return f;
 }
+LISTS.pd = { name: 'ZE_Personendaten', optional: true, title: p => p.name || p.upn, fields: {
+  upn: ['ZeUpn', 'text', true, 'E-Mail (Anmeldename)'], name: ['ZeName', 'text', false, 'Name'], anrede: ['ZeAnrede', 'text', false, 'Anrede'], titel: ['ZeTitel', 'text', false, 'Titel'],
+  vorname: ['ZeVorname', 'text', false, 'Vorname'], nachname: ['ZeNachname', 'text', false, 'Nachname'], geburtsdatum: ['ZeGeburtsdatum', 'text', false, 'Geburtsdatum'],
+  strasse: ['ZeStrasse', 'text', false, 'Straße'], hausnr: ['ZeHausnr', 'text', false, 'Hausnummer'], plz: ['ZePlz', 'text', false, 'PLZ'], bundesland: ['ZeBundesland', 'text', false, 'Bundesland'], adresszusatz: ['ZeAdresszusatz', 'text', false, 'Adresszusatz'], staatsang: ['ZeStaatsang', 'text', false, 'Staatsangehörigkeit'], ort: ['ZeOrt', 'text', false, 'Ort'], land: ['ZeLand', 'text', false, 'Land'],
+  privMail: ['ZePrivMail', 'text', false, 'Private E-Mail'], mobil: ['ZeMobil', 'text', false, 'Mobil privat'], festnetz: ['ZeFestnetz', 'text', false, 'Festnetz privat'],
+  notfallName: ['ZeNotfallName', 'text', false, 'Notfallkontakt Name'], notfallBez: ['ZeNotfallBez', 'text', false, 'Notfallkontakt Beziehung'], notfallTel: ['ZeNotfallTel', 'text', false, 'Notfallkontakt Telefon'],
+  geaendertAm: ['ZeGeaendertAm', 'text', false, 'Zuletzt geändert'] } };
 function columnDefs(key, withIndex) {
   return Object.values(LISTS[key].fields).map(([name, typ, idx, label]) => {
     const c = { name, displayName: label };
@@ -129,12 +136,12 @@ class GraphStore {
     this.lists = {};
     for (const [k, d] of Object.entries(LISTS)) { const f = ls.value.find(x => x.displayName === d.name || x.name === d.name); if (f) this.lists[k] = f.id; }
     const ak = ls.value.find(x => x.displayName === AKTE.name || x.name === AKTE.name); this.akteList = ak ? ak.id : null;
-    return { site: this.site.webUrl, missing: Object.keys(LISTS).filter(k => !this.lists[k]).map(k => LISTS[k].name) };
+    return { site: this.site.webUrl, missing: Object.keys(LISTS).filter(k => !LISTS[k].optional && !this.lists[k]).map(k => LISTS[k].name) };
   }
   async setup() {
     const scopes = ['Sites.Manage.All'];
     for (const [k, d] of Object.entries(LISTS)) {
-      if (this.lists[k]) continue;
+      if (this.lists[k] || d.optional) continue;
       const body = c => ({ displayName: d.name, columns: columnDefs(k, c), list: { template: 'genericList' } });
       let res;
       try { res = await this.g('POST', `/sites/${this.site.id}/lists`, body(true), scopes); }
@@ -177,6 +184,27 @@ class GraphStore {
 }
 
 /* ======================= Speicher: Demo (nur dieser Browser) ======================= */
+/* ---- Persönliche Daten (Liste mit "nur eigene Elemente") ---- */
+GraphStore.prototype.pdStatus = async function () {
+  if (!this.lists.pd) return { status: 'missing' };
+  try {
+    const sp = CFG.sharepoint || {}, tok = await this.token([`https://${sp.hostname}/AllSites.Write`]);
+    const r = await fetch(`https://${sp.hostname}${sp.sitePath}/_api/web/lists(guid'${this.lists.pd}')?$select=ReadSecurity,WriteSecurity`, { headers: { Authorization: 'Bearer ' + tok, Accept: 'application/json;odata=nometadata' } });
+    if (!r.ok) return { status: 'ok', unchecked: true };
+    const j = await r.json();
+    return { status: j.ReadSecurity === 2 && j.WriteSecurity === 2 ? 'ok' : 'unsafe' };
+  } catch (e) { return { status: 'ok', unchecked: true }; }
+};
+GraphStore.prototype.pdSetup = async function () {
+  const res = await this.g('POST', `/sites/${this.site.id}/lists`, { displayName: LISTS.pd.name, columns: columnDefs('pd', true), list: { template: 'genericList' } }, ['Sites.Manage.All'])
+    .catch(() => this.g('POST', `/sites/${this.site.id}/lists`, { displayName: LISTS.pd.name, columns: columnDefs('pd', false), list: { template: 'genericList' } }, ['Sites.Manage.All']));
+  this.lists.pd = res.id;
+};
+GraphStore.prototype.pdFind = async function () {
+  const ls = await this.g('GET', `/sites/${this.site.id}/lists?$select=id,displayName,name&$top=200`);
+  const f = ls.value.find(x => x.displayName === LISTS.pd.name || x.name === LISTS.pd.name); if (f) this.lists.pd = f.id;
+};
+
 /* ---- Personalakte (SharePoint-Dokumentbibliothek) ---- */
 GraphStore.prototype.raw = async function (method, path, body, contentType) {
   const tok = await this.token(this.scopes);
@@ -288,14 +316,17 @@ class DemoStore {
   }
   isDemoLeitung(upn) { return upn === 'anna.leitung@demo.de'; }
   async init() { return { site: 'Demo (nur dieser Browser)', missing: [] }; }
-  async load(key) { return JSON.parse(JSON.stringify(this.d[key === 'ma' ? 'ma' : key])); }
+  async load(key) { return JSON.parse(JSON.stringify(this.d[key] || [])); }
   async loadBuchungen(from) { return JSON.parse(JSON.stringify(this.d.buchungen.filter(b => b.datum >= from))); }
   hist(key, obj) { (this.d.hist[key + obj.id] = this.d.hist[key + obj.id] || []).push({ at: new Date().toISOString(), by: S.me.name, data: JSON.parse(JSON.stringify(obj)) }); }
-  async create(key, obj) { const o = Object.assign({}, obj, { id: 'x' + (this.d.n++), _created: new Date().toISOString() }); this.d[key].push(o); this.hist(key, o); this.save(); return JSON.parse(JSON.stringify(o)); }
+  async create(key, obj) { this.d[key] = this.d[key] || []; const o = Object.assign({}, obj, { id: 'x' + (this.d.n++), _created: new Date().toISOString() }); this.d[key].push(o); this.hist(key, o); this.save(); return JSON.parse(JSON.stringify(o)); }
   async update(key, id, partial) { const o = this.d[key].find(x => x.id === id); if (!o) throw new Error('Eintrag nicht gefunden'); Object.assign(o, partial); this.hist(key, o); this.save(); }
   async versions(key, id) { return (this.d.hist[key + id] || []).slice().reverse(); }
   async setup() {}
   reset() { localStorage.removeItem(this.k); }
+  async pdStatus() { this.d.pd = this.d.pd || []; return { status: this.d.pdLib ? 'ok' : 'missing' }; }
+  async pdSetup() { this.d.pdLib = true; this.d.pd = this.d.pd || []; this.save(); }
+  async pdFind() {}
   _ak() { return (this.d.akte = this.d.akte || { lib: false, files: [], n: 1 }); }
   async ensureColumns() {}
   async akteStatus() { return { status: this._ak().lib ? 'ok' : 'missing', drive: 'demo' }; }
@@ -315,7 +346,7 @@ class DemoStore {
 }
 
 /* ======================= Zustand ======================= */
-const S = { store: null, me: null, leitung: false, ma: [], buchungen: [], abw: [], loadedFrom: null, view: 'heute', month: today().slice(0, 7), viewUpn: null, info: null, missing: [], ort: (CFG.orte || ['Büro'])[0], busy: false, akte: null };
+const S = { store: null, me: null, leitung: false, ma: [], buchungen: [], abw: [], loadedFrom: null, view: 'heute', month: today().slice(0, 7), viewUpn: null, info: null, missing: [], ort: (CFG.orte || ['Büro'])[0], busy: false, akte: null, pd: null };
 const myMa = () => S.ma.find(m => m.upn === S.me.upn);
 const maBy = upn => S.ma.find(m => m.upn === upn);
 const dataFor = upn => ({ buchungen: S.buchungen.filter(b => b.upn === upn), abw: S.abw });
@@ -413,6 +444,7 @@ const ICON = {
   monat: '<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4M8 14h3M8 17h6"/>',
   abw: '<path d="M4 19h16M7 19c0-5 2.5-9 5-9s5 4 5 9"/><path d="M12 10V5M9.5 6.5 12 5l2.5 1.5"/>',
   team: '<circle cx="9" cy="9" r="3"/><path d="M3.5 19c.6-3 2.8-5 5.5-5s4.9 2 5.5 5"/><circle cx="17" cy="10" r="2.3"/><path d="M15.8 14.3c2.4.2 4 1.9 4.6 4.7"/>',
+  daten: '<circle cx="12" cy="8.5" r="3.5"/><path d="M5 19.5c.9-3.4 3.7-5.5 7-5.5s6.1 2.1 7 5.5"/>',
   akte: '<path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/><path d="M8 13h8"/>',
   upload: '<path d="M12 16V5M7.5 9.5 12 5l4.5 4.5"/><path d="M5 19h14"/>',
   stamm: '<rect x="3.5" y="5" width="17" height="14" rx="2"/><circle cx="9" cy="11" r="2.2"/><path d="M5.8 16.5c.5-1.8 1.7-2.7 3.2-2.7s2.7.9 3.2 2.7M14.5 10h3.5M14.5 13.5h3.5"/>',
@@ -424,10 +456,10 @@ const ICON = {
 };
 const svg = k => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[k]}</svg>`;
 const initials = n => String(n || '?').split(/\s+/).filter(Boolean).map(x => x[0]).slice(0, 2).join('').toUpperCase();
-const VIEW_LABEL = { heute: 'Heute', monat: 'Monatsnachweis', abw: 'Abwesenheiten', akte: 'Personalakte', team: 'Team', stamm: 'Stammdaten' };
+const VIEW_LABEL = { heute: 'Heute', monat: 'Monatsnachweis', abw: 'Abwesenheiten', daten: 'Persönliche Daten', akte: 'Personalakte', team: 'Team', stamm: 'Stammdaten' };
 function renderSide() {
   const offen = S.abw.filter(a => a.status === 'beantragt').length;
-  const items = [['heute'], ['monat'], ['abw'], ['akte']];
+  const items = [['heute'], ['monat'], ['abw'], ['daten'], ['akte']];
   if (S.leitung) items.push(['team', offen], ['stamm']);
   const m = myMa();
   $('#side').innerHTML = `<div class="user"><div class="avatar">${esc(initials(m ? m.name : S.me.name))}</div><div><div class="n">${esc(m ? m.name : S.me.name)}</div><div class="r">${S.leitung ? 'Leitung' : 'Mitarbeiter/in'}</div></div></div>`
@@ -466,11 +498,11 @@ function render() {
   if (!S.me) return;
   renderSide();
   if (S.missing.length && S.view !== 'stamm') { $('#main').innerHTML = viewMissing(); renderTimer(); return; }
-  const v = { heute: viewHeute, monat: viewMonat, abw: viewAbw, akte: viewAkte, team: viewTeam, stamm: viewStamm }[S.view] || viewHeute;
+  const v = { heute: viewHeute, monat: viewMonat, abw: viewAbw, daten: viewDaten, akte: viewAkte, team: viewTeam, stamm: viewStamm }[S.view] || viewHeute;
   $('#main').innerHTML = `<div class="crumb no-print">${esc(CFG.firma || 'ProTax')}<i></i>${VIEW_LABEL[S.view] || ''}</div>` + v() + `<div class="ver-m no-print">${esc(APP_VERSION)}</div>`;
   renderTimer();
 }
-const go = v => { S.view = v; if ((v === 'monat' || v === 'akte') && !S.viewUpn) S.viewUpn = S.me.upn; if (v === 'akte') S.akte = null; render(); window.scrollTo(0, 0); };
+const go = v => { S.view = v; if ((v === 'monat' || v === 'akte' || v === 'daten') && !S.viewUpn) S.viewUpn = S.me.upn; if (v === 'akte') S.akte = null; if (v === 'daten') S.pd = null; render(); window.scrollTo(0, 0); };
 const reload = () => act(async () => { await loadAll(); }, 'Aktualisiert');
 
 function viewMissing() {
@@ -731,6 +763,73 @@ function abwStatus(id, status) {
     const f = { status, entschVon: S.me.name, entschAm: new Date().toISOString() };
     await S.store.update('abw', id, f); Object.assign(a, f);
   }, 'Status: ' + status);
+}
+
+/* ---------- Persönliche Daten ---------- */
+const BUNDESLAENDER = ['', 'Baden-Württemberg', 'Bayern', 'Berlin', 'Brandenburg', 'Bremen', 'Hamburg', 'Hessen', 'Mecklenburg-Vorpommern', 'Niedersachsen', 'Nordrhein-Westfalen', 'Rheinland-Pfalz', 'Saarland', 'Sachsen', 'Sachsen-Anhalt', 'Schleswig-Holstein', 'Thüringen'];
+const PD_SECTIONS = [
+  ['Allgemein', [['titel', 'Titel', 'select', ['', 'Dr.', 'Prof.', 'Prof. Dr.']], ['anrede', 'Anrede', 'select', ['', 'Frau', 'Herr', 'Divers']], ['vorname', 'Vorname', 'text'], ['nachname', 'Nachname', 'text'], ['geburtsdatum', 'Geburtsdatum', 'date'], ['_dienst', 'E-Mail (dienstlich)', 'fix']]],
+  ['Anschrift', [['land', 'Staat', 'text'], ['plz', 'Postleitzahl', 'text'], ['bundesland', 'Bundesland', 'select', BUNDESLAENDER], ['ort', 'Stadt', 'text'], ['_row', [['strasse', 'Straße', 'text'], ['hausnr', 'Hausnummer', 'text']]], ['adresszusatz', 'Zusätzliche Adressinformationen', 'text']]],
+  ['Zusätzliche Information', [['staatsang', 'Staatsangehörigkeit', 'text'], ['privMail', 'Private E-Mail', 'email'], ['mobil', 'Private Telefonnummer', 'tel'], ['festnetz', 'Private Festnetznummer', 'tel'], ['_h', 'Notfallkontakt'], ['notfallName', 'Name', 'text'], ['notfallBez', 'Beziehung (z. B. Partner/in)', 'text'], ['notfallTel', 'Telefon', 'tel']]]];
+const pdKeys = () => PD_SECTIONS.flatMap(([, fs]) => fs.flatMap(f => f[0] === '_row' ? f[1].map(x => x[0]) : f[0][0] === '_' ? [] : [f[0]]));
+async function loadPd() {
+  S.pd = { loading: true }; render();
+  try {
+    if (S.store.pdFind && !(S.store.lists || {}).pd) await S.store.pdFind();
+    const st = await S.store.pdStatus();
+    if (st.status !== 'ok') { S.pd = { status: st.status }; return render(); }
+    const items = await S.store.load('pd');
+    S.pd = { status: 'ok', unchecked: st.unchecked, items: S.leitung ? items : items.filter(x => x.upn === S.me.upn) };
+  } catch (e) { console.error(e); S.pd = { status: 'error', error: e.message || String(e) }; }
+  render();
+}
+function viewDaten() {
+  const upn = S.leitung ? (S.viewUpn || S.me.upn) : S.me.upn, m = maBy(upn), P = S.pd;
+  const sel = S.leitung && S.ma.length ? `<select class="inp" style="width:auto" onchange="S.viewUpn=this.value;render()">${S.ma.map(x => `<option value="${esc(x.upn)}" ${x.upn === upn ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>` : '';
+  const name = m ? m.name : S.me.name;
+  const head = `<div class="card-h"><div><div class="card-t">Persönliche Daten · ${esc(name)}</div><div class="muted sm">${upn === S.me.upn ? 'Bitte aktuell halten – sichtbar nur für dich und die Kanzleileitung' : 'Von der Mitarbeiterin bzw. dem Mitarbeiter gepflegt – sichtbar nur für sie/ihn und die Leitung'}</div></div>${sel}</div>`;
+  if (!P) { setTimeout(loadPd); return `<div class="card">${head}<div class="empty">Lade …</div></div>`; }
+  if (P.loading) return `<div class="card">${head}<div class="empty">Lade …</div></div>`;
+  if (P.status === 'error') return `<div class="card">${head}<div class="card-b"><div class="banner err">${esc(P.error)}</div><div class="actions"><button class="btn" onclick="loadPd()">Erneut versuchen</button></div></div></div>`;
+  if (P.status === 'missing') return `<div class="card">${head}<div class="card-b">${S.leitung
+    ? `<p>Für die persönlichen Daten wird in SharePoint eine eigene Liste <b>${LISTS.pd.name}</b> angelegt. Jede Person sieht dort nur ihren eigenen Datensatz.</p><div class="actions"><button class="btn primary" onclick="pdSetupAction()">Bereich einrichten</button></div>`
+    : '<div class="empty">Dieser Bereich wird gerade von der Kanzleileitung eingerichtet.</div>'}</div></div>`;
+  if (P.status === 'unsafe') return `<div class="card">${head}<div class="card-b">${S.leitung ? `
+    <div class="banner warn"><b>Liste noch nicht abgesichert.</b> In ${LISTS.pd.name} können sonst alle Mitglieder die Daten der anderen lesen. Bitte in SharePoint einstellen:</div>
+    <ol class="steps"><li>SharePoint-Website → <b>Websiteinhalte</b> → bei <b>${LISTS.pd.name}</b> auf <b>⋯ → Einstellungen</b></li>
+    <li><b>Erweiterte Einstellungen</b> → Lesezugriff: <b>Elemente lesen, die vom Benutzer erstellt wurden</b></li>
+    <li>Erstellungs- und Bearbeitungszugriff: <b>Elemente erstellen und bearbeiten, die vom Benutzer erstellt wurden</b></li>
+    <li>Anlagen <b>Deaktiviert</b>, Kommentare <b>Nein</b> → <b>OK</b>; unter <b>Versionsverwaltungseinstellungen</b> den Versionsverlauf aktivieren</li></ol>
+    <div class="actions"><button class="btn primary" onclick="loadPd()">Erneut prüfen</button></div>` : '<div class="empty">Dieser Bereich wird gerade von der Kanzleileitung eingerichtet.</div>'}</div></div>`;
+  const p = (P.items || []).find(x => x.upn === upn) || {};
+  if (!p.vorname && !p.nachname && m) { const parts = m.name.split(' '); p.vorname = p.vorname || parts.slice(0, -1).join(' '); p.nachname = p.nachname || parts.slice(-1).join(''); }
+  if (!p.land) p.land = 'Deutschland'; if (!p.staatsang && !p.id) p.staatsang = '';
+  const field = ([k, l, t, opts]) => k === '_row' ? `<div class="pd-row">${l.map(field).join('')}</div>`
+    : k === '_h' ? `<div class="pd-sub">${l}</div>`
+    : t === 'fix' ? `<div class="f"><label>${l}</label><input value="${esc(upn)}" disabled></div>`
+    : t === 'select'
+    ? `<div class="f"><label>${l}</label><select id="pd-${k}">${opts.map(o => `<option value="${esc(o)}" ${o === (p[k] || '') ? 'selected' : ''}>${esc(o || '–')}</option>`).join('')}</select></div>`
+    : `<div class="f"><label>${l}</label><input id="pd-${k}" type="${t}" value="${esc(p[k] || '')}" ${t === 'tel' ? 'inputmode="tel"' : ''} autocomplete="off"></div>`;
+  const kann = S.leitung || upn === S.me.upn;
+  return `<div class="card">${head}<div class="card-b">
+    ${P.unchecked && S.leitung ? '<div class="banner info" style="margin-bottom:16px">Die Absicherung der Liste konnte nicht automatisch geprüft werden. Bitte sicherstellen, dass in SharePoint „nur eigene Elemente lesen/bearbeiten“ eingestellt ist.</div>' : ''}
+    <div class="pd-grid">${PD_SECTIONS.map(([t, fs]) => `<section><h3 class="pd-h">${t}</h3><div class="pd-fields">${fs.map(field).join('')}</div></section>`).join('')}</div>
+    <div class="actions"><span class="muted sm" style="margin-right:auto;align-self:center">${p.geaendertAm ? 'Zuletzt geändert: ' + new Date(p.geaendertAm).toLocaleString('de-DE') : ''}</span>
+      <button class="btn primary" onclick="pdSaveAction('${esc(upn)}')" ${kann ? '' : 'disabled'}>Speichern</button></div></div></div>`;
+}
+const pdSetupAction = () => act(async () => { await S.store.pdSetup(); S.pd = null; }, 'Bereich angelegt');
+function pdSaveAction(upn) {
+  const v = k => ($('#pd-' + k)?.value || '').trim(), o = { upn };
+  pdKeys().forEach(k => { o[k] = v(k); });
+  if (o.privMail && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(o.privMail)) return toast('Private E-Mail ist ungültig', 'err');
+  if (o.plz && /deutschland/i.test(o.land) && !/^\d{5}$/.test(o.plz)) return toast('Postleitzahl muss 5 Ziffern haben', 'err');
+  for (const k of ['mobil', 'festnetz', 'notfallTel']) if (o[k] && !/^[+\d][\d\s\/()-]{4,}$/.test(o[k])) return toast('Telefonnummer prüfen: ' + o[k], 'err');
+  const m = maBy(upn); o.name = m ? m.name : [o.vorname, o.nachname].filter(Boolean).join(' '); o.geaendertAm = new Date().toISOString();
+  act(async () => {
+    const ex = (S.pd.items || []).find(x => x.upn === upn);
+    if (ex) { await S.store.update('pd', ex.id, o, Object.assign({}, ex, o)); Object.assign(ex, o); }
+    else { const n = await S.store.create('pd', o); S.pd.items.push(n); if (upn !== S.me.upn) await fuerAndere('pd', n); }
+  }, 'Gespeichert');
 }
 
 /* ---------- Personalakte ---------- */
