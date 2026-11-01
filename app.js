@@ -772,6 +772,6 @@ function tick() {
     S.viewUpn = me.upn;
     render();
     setInterval(tick, 1000);
-    if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+    if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => {});
   } catch (e) { renderFatal(e); }
 })();
