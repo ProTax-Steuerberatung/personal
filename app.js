@@ -1,6 +1,7 @@
 'use strict';
 /* Zeiterfassung ProTax – Oberfläche, Anmeldung (Microsoft 365) und Speicher (SharePoint-Listen über Microsoft Graph) */
 const CFG = window.ZE_CONFIG || {}, Z = window.ZC;
+const APP_VERSION = 'ProTax Personal v.1.2';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const WD = ['', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
@@ -337,7 +338,8 @@ function renderSide() {
   if (S.leitung) items.push(['team', offen], ['stamm']);
   const m = myMa();
   $('#side').innerHTML = `<div class="user"><div class="avatar">${esc(initials(m ? m.name : S.me.name))}</div><div><div class="n">${esc(m ? m.name : S.me.name)}</div><div class="r">${S.leitung ? 'Leitung' : 'Mitarbeiter/in'}</div></div></div>`
-    + items.map(([v, n]) => `<div class="nav ${S.view === v ? 'on' : ''}" role="link" tabindex="0" onclick="go('${v}')" onkeydown="if(event.key==='Enter')go('${v}')">${svg(v)}<span>${VIEW_LABEL[v]}</span>${n ? `<span class="cnt">${n}</span>` : ''}</div>`).join('');
+    + items.map(([v, n]) => `<div class="nav ${S.view === v ? 'on' : ''}" role="link" tabindex="0" onclick="go('${v}')" onkeydown="if(event.key==='Enter')go('${v}')">${svg(v)}<span>${VIEW_LABEL[v]}</span>${n ? `<span class="cnt">${n}</span>` : ''}</div>`).join('')
+    + `<div class="ver">${esc(APP_VERSION)}</div>`;
   const demo = CFG.demo ? `<select class="inp" style="width:auto" onchange="demoUser(this.value)" title="Demo: Benutzer wechseln">${S.store.users().map(u => `<option value="${esc(u.upn)}" ${u.upn === S.me.upn ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select><span class="badge b-warn">Demo</span>
     <button class="btn sm" onclick="demoReset()">Demo zurücksetzen</button>` : '';
   $('#who').innerHTML = `${demo}
@@ -372,7 +374,7 @@ function render() {
   renderSide();
   if (S.missing.length && S.view !== 'stamm') { $('#main').innerHTML = viewMissing(); renderTimer(); return; }
   const v = { heute: viewHeute, monat: viewMonat, abw: viewAbw, team: viewTeam, stamm: viewStamm }[S.view] || viewHeute;
-  $('#main').innerHTML = `<div class="crumb no-print">${esc(CFG.firma || 'ProTax')}<i></i>${VIEW_LABEL[S.view] || ''}</div>` + v();
+  $('#main').innerHTML = `<div class="crumb no-print">${esc(CFG.firma || 'ProTax')}<i></i>${VIEW_LABEL[S.view] || ''}</div>` + v() + `<div class="ver-m no-print">${esc(APP_VERSION)}</div>`;
   renderTimer();
 }
 const go = v => { S.view = v; if (v === 'monat' && !S.viewUpn) S.viewUpn = S.me.upn; render(); window.scrollTo(0, 0); };
@@ -673,7 +675,8 @@ function viewStamm() {
     <div class="sm">Modus: <b>${CFG.demo ? 'Demo – Daten nur in diesem Browser' : 'Microsoft 365'}</b>${S.info?.site ? ` · Website: ${esc(S.info.site)}` : ''}</div>
     ${S.missing.length ? `<div class="banner warn" style="margin-top:10px">Fehlende Listen: ${S.missing.map(esc).join(', ')}. Zum Anlegen brauchst du Besitzerrechte auf der SharePoint-Website.</div>
       <div class="actions"><button class="btn primary" onclick="setupLists()">Listen jetzt anlegen</button></div>`
-      : `<div class="banner ok" style="margin-top:10px">Alle drei Listen sind vorhanden. Elementberechtigungen gemäß Anleitung Schritt 6 einstellen.</div>`}
+      : `<div class="banner ok" style="margin-top:10px">Einrichtung abgeschlossen – alle drei SharePoint-Listen sind verbunden.</div>
+         <div class="muted sm" style="margin-top:8px">Für Admins: In SharePoint müssen bei ZE_Buchungen und ZE_Abwesenheiten „Nur eigene Elemente lesen“ und der Versionsverlauf aktiv bleiben.</div>`}
   </div></div>`;
   if (S.missing.length) return setup;
   return `<div class="card"><div class="card-h"><div class="card-t">Mitarbeiter</div><button class="btn primary sm" onclick="maForm()">+ Neu</button></div>
@@ -746,6 +749,7 @@ function renderLogin(msg) {
     ${msg ? `<div class="banner err">${esc(msg)}</div>` : ''}
     <button class="btn primary login-btn" onclick="S.store.loginRedirect()">${ms}<span>Mit Microsoft anmelden</span></button>
     <p class="login-note">${ico('<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>')}Anmeldung mit dem Kanzlei-Konto. Ihre Daten bleiben im Microsoft 365 der Kanzlei.</p>
+    <p class="login-ver">${esc(APP_VERSION)}</p>
   </div>`;
 }
 function renderFatal(e) {
