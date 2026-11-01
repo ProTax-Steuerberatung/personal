@@ -9,7 +9,7 @@ window.ZE_CONFIG = {
 
   sharepoint: {
     hostname: 'protaxsteuerberatung.sharepoint.com',
-    sitePath: '/sites/Zeiterfassung'
+    sitePath: '/sites/Personal'
   },
 
   // Leitung wird in der App unter Stammdaten markiert – hier keine Namen eintragen (Datei ist öffentlich)
