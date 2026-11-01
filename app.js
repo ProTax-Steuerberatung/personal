@@ -316,23 +316,64 @@ const gehen = () => act(async () => {
 }, 'Ausgestempelt ' + nowHHMM());
 
 /* ======================= Darstellung ======================= */
+const ICON = {
+  heute: '<path d="M12 7v5l3 2"/><circle cx="12" cy="12" r="8.5"/>',
+  monat: '<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4M8 14h3M8 17h6"/>',
+  abw: '<path d="M4 19h16M7 19c0-5 2.5-9 5-9s5 4 5 9"/><path d="M12 10V5M9.5 6.5 12 5l2.5 1.5"/>',
+  team: '<circle cx="9" cy="9" r="3"/><path d="M3.5 19c.6-3 2.8-5 5.5-5s4.9 2 5.5 5"/><circle cx="17" cy="10" r="2.3"/><path d="M15.8 14.3c2.4.2 4 1.9 4.6 4.7"/>',
+  stamm: '<rect x="3.5" y="5" width="17" height="14" rx="2"/><circle cx="9" cy="11" r="2.2"/><path d="M5.8 16.5c.5-1.8 1.7-2.7 3.2-2.7s2.7.9 3.2 2.7M14.5 10h3.5M14.5 13.5h3.5"/>',
+  refresh: '<path d="M19 12a7 7 0 1 1-2.05-4.95"/><path d="M19 5v4h-4"/>',
+  logout: '<path d="M14 5h4a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-4"/><path d="M10 16l-4-4 4-4M6 12h9"/>',
+  play: '<path d="M8 5.5v13l10.5-6.5z" fill="currentColor" stroke="none"/>',
+  stop: '<rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor" stroke="none"/>',
+  pause: '<path d="M9 6v12M15 6v12"/>'
+};
+const svg = k => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[k]}</svg>`;
+const initials = n => String(n || '?').split(/\s+/).filter(Boolean).map(x => x[0]).slice(0, 2).join('').toUpperCase();
+const VIEW_LABEL = { heute: 'Heute', monat: 'Monatsnachweis', abw: 'Abwesenheiten', team: 'Team', stamm: 'Stammdaten' };
 function renderSide() {
   const offen = S.abw.filter(a => a.status === 'beantragt').length;
-  const items = [['heute', 'Heute'], ['monat', 'Monatsnachweis'], ['abw', 'Abwesenheiten']];
-  if (S.leitung) items.push(['team', 'Team', offen], ['stamm', 'Stammdaten']);
-  $('#side').innerHTML = `<div class="side-t">Zeiterfassung</div>` + items.map(([v, l, n]) => `<div class="nav ${S.view === v ? 'on' : ''}" onclick="go('${v}')">${l}${n ? `<span class="cnt">${n}</span>` : ''}</div>`).join('');
-  const demo = CFG.demo ? `<select class="inp" style="width:auto;padding:4px 6px" onchange="demoUser(this.value)" title="Demo: Benutzer wechseln">${S.store.users().map(u => `<option value="${esc(u.upn)}" ${u.upn === S.me.upn ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select><span class="badge b-warn">Demo</span>` : '';
-  $('#who').innerHTML = `${demo}${CFG.demo ? '' : `<span>${esc(S.me.name)}</span>`}${S.leitung ? '<span class="badge b-info">Leitung</span>' : ''}
-    <button class="btn sm no-print" onclick="reload()" title="Daten neu laden">Aktualisieren</button>
-    ${CFG.demo ? '<button class="btn sm" onclick="demoReset()">Demo zurücksetzen</button>' : '<button class="btn sm" onclick="S.store.logout()">Abmelden</button>'}`;
-  $('#subtitle').textContent = CFG.firma || '';
+  const items = [['heute'], ['monat'], ['abw']];
+  if (S.leitung) items.push(['team', offen], ['stamm']);
+  const m = myMa();
+  $('#side').innerHTML = `<div class="user"><div class="avatar">${esc(initials(m ? m.name : S.me.name))}</div><div><div class="n">${esc(m ? m.name : S.me.name)}</div><div class="r">${S.leitung ? 'Leitung' : 'Mitarbeiter/in'}</div></div></div>`
+    + items.map(([v, n]) => `<div class="nav ${S.view === v ? 'on' : ''}" role="link" tabindex="0" onclick="go('${v}')" onkeydown="if(event.key==='Enter')go('${v}')">${svg(v)}<span>${VIEW_LABEL[v]}</span>${n ? `<span class="cnt">${n}</span>` : ''}</div>`).join('');
+  const demo = CFG.demo ? `<select class="inp" style="width:auto" onchange="demoUser(this.value)" title="Demo: Benutzer wechseln">${S.store.users().map(u => `<option value="${esc(u.upn)}" ${u.upn === S.me.upn ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select><span class="badge b-warn">Demo</span>
+    <button class="btn sm" onclick="demoReset()">Demo zurücksetzen</button>` : '';
+  $('#who').innerHTML = `${demo}
+    <button class="iconbtn no-print" onclick="reload()" title="Daten neu laden" aria-label="Daten neu laden">${svg('refresh')}</button>
+    ${CFG.demo ? '' : `<button class="iconbtn no-print" onclick="S.store.logout()" title="Abmelden" aria-label="Abmelden">${svg('logout')}</button>`}`;
+  $('#appname').textContent = CFG.appName || 'Personal';
+  document.title = CFG.appName || 'Personal';
+}
+// Schwebender Timer unten rechts: laufende Sitzung + Tagessumme, Start/Stopp mit einem Klick
+function renderTimer() {
+  const el = $('#timer'); if (!el) return;
+  const m = S.me && myMa();
+  if (!m || S.missing.length) { el.hidden = true; return; }
+  const st = stempelStatus(S.me.upn), t = today();
+  const row = Z.tagesZeile(m, t, dataFor(S.me.upn), CFG, t, nowMin());
+  let lauf = '00:00:00';
+  if (st.s !== 'aus') {
+    const [h, mi] = st.seit.split(':').map(Number), now = new Date();
+    let sec = (now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds()) - (h * 3600 + mi * 60);
+    if (sec < 0) sec += 86400;
+    lauf = [Math.floor(sec / 3600), Math.floor(sec / 60) % 60, sec % 60].map(Z.pad).join(':');
+  }
+  const btn = st.s === 'aus' ? `<button class="tb" onclick="kommen()" aria-label="Kommen" title="Kommen">${svg('play')}</button>`
+    : st.s === 'pause' ? `<button class="tb" onclick="pauseEnde()" aria-label="Pause beenden" title="Pause beenden">${svg('play')}</button>`
+    : `<button class="tb run" onclick="gehen()" aria-label="Gehen" title="Gehen">${svg('stop')}</button>`;
+  const label = st.s === 'aus' ? 'Nicht eingestempelt' : st.s === 'pause' ? 'Pause' : 'Anwesend';
+  el.innerHTML = `${btn}<div onclick="go('heute')" role="link" tabindex="0"><div class="tt">${lauf}</div><div class="ts">${label} · Heute ${Z.dur(row.ist)} h</div></div>`;
+  el.hidden = false;
 }
 function render() {
   if (!S.me) return;
   renderSide();
-  if (S.missing.length && S.view !== 'stamm') { $('#main').innerHTML = viewMissing(); return; }
+  if (S.missing.length && S.view !== 'stamm') { $('#main').innerHTML = viewMissing(); renderTimer(); return; }
   const v = { heute: viewHeute, monat: viewMonat, abw: viewAbw, team: viewTeam, stamm: viewStamm }[S.view] || viewHeute;
-  $('#main').innerHTML = v();
+  $('#main').innerHTML = `<div class="crumb no-print">${esc(CFG.firma || 'ProTax')}<i></i>${VIEW_LABEL[S.view] || ''}</div>` + v();
+  renderTimer();
 }
 const go = v => { S.view = v; if (v === 'monat' && !S.viewUpn) S.viewUpn = S.me.upn; render(); window.scrollTo(0, 0); };
 const reload = () => act(async () => { await loadAll(); }, 'Aktualisiert');
@@ -369,7 +410,7 @@ function viewHeute() {
   const btns = st.s === 'aus'
     ? `<button class="btn big ok" onclick="kommen()" ${S.busy ? 'disabled' : ''}>Kommen</button>`
     : st.s === 'an'
-      ? `<button class="btn big warn" onclick="pause()" ${S.busy ? 'disabled' : ''}>Pause</button><button class="btn big danger" onclick="gehen()" ${S.busy ? 'disabled' : ''}>Gehen</button>`
+      ? `<button class="btn big" onclick="pause()" ${S.busy ? 'disabled' : ''}>Pause</button><button class="btn big danger" onclick="gehen()" ${S.busy ? 'disabled' : ''}>Gehen</button>`
       : `<button class="btn big ok" onclick="pauseEnde()" ${S.busy ? 'disabled' : ''}>Pause beenden</button><button class="btn big danger" onclick="gehen()" ${S.busy ? 'disabled' : ''}>Gehen</button>`;
   const orte = st.s === 'aus' ? `<div class="seg">${(CFG.orte || []).map(o => `<label><input type="radio" name="ort" value="${esc(o)}" ${o === S.ort ? 'checked' : ''} onchange="S.ort=this.value">${esc(o)}</label>`).join('')}</div>` : '';
   const heuteBl = S.buchungen.filter(b => b.upn === S.me.upn && b.datum === t && b.status !== 'storniert').sort((a, c) => a.beginn.localeCompare(c.beginn));
@@ -632,7 +673,7 @@ function viewStamm() {
     <div class="sm">Modus: <b>${CFG.demo ? 'Demo – Daten nur in diesem Browser' : 'Microsoft 365'}</b>${S.info?.site ? ` · Website: ${esc(S.info.site)}` : ''}</div>
     ${S.missing.length ? `<div class="banner warn" style="margin-top:10px">Fehlende Listen: ${S.missing.map(esc).join(', ')}. Zum Anlegen brauchst du Besitzerrechte auf der SharePoint-Website.</div>
       <div class="actions"><button class="btn primary" onclick="setupLists()">Listen jetzt anlegen</button></div>`
-      : `<div class="banner ok" style="margin-top:10px">Alle drei Listen sind vorhanden. Elementberechtigungen gemäß Anleitung Schritt 4 einstellen.</div>`}
+      : `<div class="banner ok" style="margin-top:10px">Alle drei Listen sind vorhanden. Elementberechtigungen gemäß Anleitung Schritt 6 einstellen.</div>`}
   </div></div>`;
   if (S.missing.length) return setup;
   return `<div class="card"><div class="card-h"><div class="card-t">Mitarbeiter</div><button class="btn primary sm" onclick="maForm()">+ Neu</button></div>
@@ -693,6 +734,7 @@ function demoReset() { if (!confirm('Demo-Daten zurücksetzen?')) return; S.stor
 /* ======================= Start ======================= */
 function renderLogin(msg) {
   $('#side').style.display = 'none';
+  $('#appname').textContent = CFG.appName || 'Personal';
   $('#main').innerHTML = `<div class="card" style="max-width:460px;margin:40px auto"><div class="card-b" style="text-align:center;display:flex;flex-direction:column;gap:14px;align-items:center">
     <div class="card-t">Anmeldung</div><div class="muted sm">Mit dem Microsoft-365-Konto der Kanzlei anmelden.</div>
     ${msg ? `<div class="banner err">${esc(msg)}</div>` : ''}
@@ -705,8 +747,9 @@ function renderFatal(e) {
     <div class="actions"><button class="btn" onclick="location.reload()">Erneut versuchen</button>${S.store && S.store.logout && S.me ? '<button class="btn" onclick="S.store.logout()">Abmelden</button>' : ''}</div></div></div>`;
 }
 function tick() {
+  renderTimer();
   const c = $('#clock'); if (c) c.textContent = nowHHMM();
-  if (S.view === 'heute' && !$('#modal').innerHTML && !S.busy && new Date().getSeconds() < 31) render();
+  if (S.view === 'heute' && !$('#modal').innerHTML && !S.busy && new Date().getSeconds() === 0) render();
 }
 (async () => {
   try {
@@ -720,7 +763,7 @@ function tick() {
     if (S.missing.length) S.view = 'stamm';
     S.viewUpn = me.upn;
     render();
-    setInterval(tick, 30000);
+    setInterval(tick, 1000);
     if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
   } catch (e) { renderFatal(e); }
 })();
