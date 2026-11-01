@@ -733,12 +733,20 @@ function demoReset() { if (!confirm('Demo-Daten zurücksetzen?')) return; S.stor
 
 /* ======================= Start ======================= */
 function renderLogin(msg) {
+  document.body.classList.add('login-mode');
   $('#side').style.display = 'none';
-  $('#appname').textContent = CFG.appName || 'Personal';
-  $('#main').innerHTML = `<div class="card" style="max-width:460px;margin:40px auto"><div class="card-b" style="text-align:center;display:flex;flex-direction:column;gap:14px;align-items:center">
-    <div class="card-t">Anmeldung</div><div class="muted sm">Mit dem Microsoft-365-Konto der Kanzlei anmelden.</div>
+  const ico = (d, k) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+  const ms = '<svg viewBox="0 0 21 21" aria-hidden="true"><rect x="1" y="1" width="9" height="9" fill="#f25022"/><rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/><rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg>';
+  const feat = [[ICON.heute, 'Kommen, Pause und Gehen mit einem Klick'], [ICON.monat, 'Monatsnachweis mit Saldo und Prüfung'], [ICON.abw, 'Urlaub beantragen, Abwesenheiten melden']];
+  $('#main').innerHTML = `<div class="login">
+    <div class="login-ico">${ico(ICON.heute)}</div>
+    <h1>Willkommen bei ${esc(CFG.appName || 'Personal')}</h1>
+    <p class="login-sub">Arbeitszeit und Abwesenheiten für ${esc(CFG.firma || 'die Kanzlei')}</p>
+    <ul class="login-feat">${feat.map(([d, t]) => `<li>${ico(d)}<span>${t}</span></li>`).join('')}</ul>
     ${msg ? `<div class="banner err">${esc(msg)}</div>` : ''}
-    <button class="btn primary" style="padding:10px 22px" onclick="S.store.loginRedirect()">Mit Microsoft anmelden</button></div></div>`;
+    <button class="btn primary login-btn" onclick="S.store.loginRedirect()">${ms}<span>Mit Microsoft anmelden</span></button>
+    <p class="login-note">${ico('<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>')}Anmeldung mit dem Kanzlei-Konto. Ihre Daten bleiben im Microsoft 365 der Kanzlei.</p>
+  </div>`;
 }
 function renderFatal(e) {
   console.error(e);
