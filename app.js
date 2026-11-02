@@ -1,7 +1,7 @@
 'use strict';
 /* Zeiterfassung ProTax – Oberfläche, Anmeldung (Microsoft 365) und Speicher (SharePoint-Listen über Microsoft Graph) */
 const CFG = window.ZE_CONFIG || {}, Z = window.ZC;
-const APP_VERSION = 'ProTax Personal v.1.4';
+const APP_VERSION = 'ProTax Personal v.1.4.1';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const WD = ['', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
@@ -187,12 +187,13 @@ class GraphStore {
 /* ---- Persönliche Daten (Liste mit "nur eigene Elemente") ---- */
 GraphStore.prototype.pdStatus = async function () {
   if (!this.lists.pd) return { status: 'missing' };
+  if (this._pdOk) return { status: 'ok' };
   try {
     const sp = CFG.sharepoint || {}, tok = await this.token([`https://${sp.hostname}/AllSites.Write`]);
     const r = await fetch(`https://${sp.hostname}${sp.sitePath}/_api/web/lists(guid'${this.lists.pd}')?$select=ReadSecurity,WriteSecurity`, { headers: { Authorization: 'Bearer ' + tok, Accept: 'application/json;odata=nometadata' } });
     if (!r.ok) return { status: 'ok', unchecked: true };
-    const j = await r.json();
-    return { status: j.ReadSecurity === 2 && j.WriteSecurity === 2 ? 'ok' : 'unsafe' };
+    const j = await r.json(), ok = j.ReadSecurity === 2 && j.WriteSecurity === 2; if (ok) this._pdOk = true;
+    return { status: ok ? 'ok' : 'unsafe' };
   } catch (e) { return { status: 'ok', unchecked: true }; }
 };
 GraphStore.prototype.pdSetup = async function () {
@@ -502,7 +503,7 @@ function render() {
   $('#main').innerHTML = `<div class="crumb no-print">${esc(CFG.firma || 'ProTax')}<i></i>${VIEW_LABEL[S.view] || ''}</div>` + v() + `<div class="ver-m no-print">${esc(APP_VERSION)}</div>`;
   renderTimer();
 }
-const go = v => { S.view = v; if ((v === 'monat' || v === 'akte' || v === 'daten') && !S.viewUpn) S.viewUpn = S.me.upn; if (v === 'akte') S.akte = null; if (v === 'daten') S.pd = null; render(); window.scrollTo(0, 0); };
+const go = v => { S.view = v; if ((v === 'monat' || v === 'akte' || v === 'daten') && !S.viewUpn) S.viewUpn = S.me.upn; if (v === 'akte') S.akte = null; if (v === 'daten' && S.pd && S.pd.status) setTimeout(() => loadPd(true)); render(); window.scrollTo(0, 0); };
 const reload = () => act(async () => { await loadAll(); }, 'Aktualisiert');
 
 function viewMissing() {
@@ -772,25 +773,30 @@ const PD_SECTIONS = [
   ['Anschrift', [['land', 'Staat', 'text'], ['plz', 'Postleitzahl', 'text'], ['bundesland', 'Bundesland', 'select', BUNDESLAENDER], ['ort', 'Stadt', 'text'], ['_row', [['strasse', 'Straße', 'text'], ['hausnr', 'Hausnummer', 'text']]], ['adresszusatz', 'Zusätzliche Adressinformationen', 'text']]],
   ['Zusätzliche Information', [['staatsang', 'Staatsangehörigkeit', 'text'], ['privMail', 'Private E-Mail', 'email'], ['mobil', 'Private Telefonnummer', 'tel'], ['festnetz', 'Private Festnetznummer', 'tel'], ['_h', 'Notfallkontakt'], ['notfallName', 'Name', 'text'], ['notfallBez', 'Beziehung (z. B. Partner/in)', 'text'], ['notfallTel', 'Telefon', 'tel']]]];
 const pdKeys = () => PD_SECTIONS.flatMap(([, fs]) => fs.flatMap(f => f[0] === '_row' ? f[1].map(x => x[0]) : f[0][0] === '_' ? [] : [f[0]]));
-async function loadPd() {
-  S.pd = { loading: true }; render();
-  try {
-    if (S.store.pdFind && !(S.store.lists || {}).pd) await S.store.pdFind();
-    const st = await S.store.pdStatus();
-    if (st.status !== 'ok') { S.pd = { status: st.status }; return render(); }
-    const items = await S.store.load('pd');
-    S.pd = { status: 'ok', unchecked: st.unchecked, items: S.leitung ? items : items.filter(x => x.upn === S.me.upn) };
-  } catch (e) { console.error(e); S.pd = { status: 'error', error: e.message || String(e) }; }
-  render();
+// Lädt im Hintergrund (quiet) oder mit Ladeanzeige. Status-Prüfung und Daten laufen parallel, Prüfung max. 6 s.
+let pdLoading = null;
+function loadPd(quiet) {
+  if (pdLoading) return pdLoading;
+  if (!quiet && !(S.pd && S.pd.status)) { S.pd = { loading: true }; render(); }
+  pdLoading = (async () => {
+    try {
+      if (S.store.pdFind && !(S.store.lists || {}).pd) await S.store.pdFind();
+      if (S.store.lists && !S.store.lists.pd && S.store.pdFind) { S.pd = { status: 'missing' }; return; }
+      const timeout = new Promise(r => setTimeout(() => r({ status: 'ok', unchecked: true }), 6000));
+      const [st, items] = await Promise.all([Promise.race([S.store.pdStatus(), timeout]), S.store.load('pd').catch(e => { if (S.store.lists && !S.store.lists.pd) return []; throw e; })]);
+      S.pd = st.status !== 'ok' ? { status: st.status } : { status: 'ok', unchecked: st.unchecked, items: S.leitung ? items : items.filter(x => x.upn === S.me.upn) };
+    } catch (e) { console.error(e); if (!quiet) S.pd = { status: 'error', error: e.message || String(e) }; }
+  })().finally(() => { pdLoading = null; if (S.view === 'daten') render(); });
+  return pdLoading;
 }
 function viewDaten() {
   const upn = S.leitung ? (S.viewUpn || S.me.upn) : S.me.upn, m = maBy(upn), P = S.pd;
   const sel = S.leitung && S.ma.length ? `<select class="inp" style="width:auto" onchange="S.viewUpn=this.value;render()">${S.ma.map(x => `<option value="${esc(x.upn)}" ${x.upn === upn ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>` : '';
   const name = m ? m.name : S.me.name;
   const head = `<div class="card-h"><div><div class="card-t">Persönliche Daten · ${esc(name)}</div><div class="muted sm">${upn === S.me.upn ? 'Bitte aktuell halten – sichtbar nur für dich und die Kanzleileitung' : 'Von der Mitarbeiterin bzw. dem Mitarbeiter gepflegt – sichtbar nur für sie/ihn und die Leitung'}</div></div>${sel}</div>`;
-  if (!P) { setTimeout(loadPd); return `<div class="card">${head}<div class="empty">Lade …</div></div>`; }
+  if (!P) { setTimeout(() => loadPd()); return `<div class="card">${head}<div class="empty">Lade …</div></div>`; }
   if (P.loading) return `<div class="card">${head}<div class="empty">Lade …</div></div>`;
-  if (P.status === 'error') return `<div class="card">${head}<div class="card-b"><div class="banner err">${esc(P.error)}</div><div class="actions"><button class="btn" onclick="loadPd()">Erneut versuchen</button></div></div></div>`;
+  if (P.status === 'error') return `<div class="card">${head}<div class="card-b"><div class="banner err">${esc(P.error)}</div><div class="actions"><button class="btn" onclick="pdRecheck()">Erneut versuchen</button></div></div></div>`;
   if (P.status === 'missing') return `<div class="card">${head}<div class="card-b">${S.leitung
     ? `<p>Für die persönlichen Daten wird in SharePoint eine eigene Liste <b>${LISTS.pd.name}</b> angelegt. Jede Person sieht dort nur ihren eigenen Datensatz.</p><div class="actions"><button class="btn primary" onclick="pdSetupAction()">Bereich einrichten</button></div>`
     : '<div class="empty">Dieser Bereich wird gerade von der Kanzleileitung eingerichtet.</div>'}</div></div>`;
@@ -800,7 +806,7 @@ function viewDaten() {
     <li><b>Erweiterte Einstellungen</b> → Lesezugriff: <b>Elemente lesen, die vom Benutzer erstellt wurden</b></li>
     <li>Erstellungs- und Bearbeitungszugriff: <b>Elemente erstellen und bearbeiten, die vom Benutzer erstellt wurden</b></li>
     <li>Anlagen <b>Deaktiviert</b>, Kommentare <b>Nein</b> → <b>OK</b>; unter <b>Versionsverwaltungseinstellungen</b> den Versionsverlauf aktivieren</li></ol>
-    <div class="actions"><button class="btn primary" onclick="loadPd()">Erneut prüfen</button></div>` : '<div class="empty">Dieser Bereich wird gerade von der Kanzleileitung eingerichtet.</div>'}</div></div>`;
+    <div class="actions"><button class="btn primary" onclick="pdRecheck()">Erneut prüfen</button></div>` : '<div class="empty">Dieser Bereich wird gerade von der Kanzleileitung eingerichtet.</div>'}</div></div>`;
   const p = (P.items || []).find(x => x.upn === upn) || {};
   if (!p.vorname && !p.nachname && m) { const parts = m.name.split(' '); p.vorname = p.vorname || parts.slice(0, -1).join(' '); p.nachname = p.nachname || parts.slice(-1).join(''); }
   if (!p.land) p.land = 'Deutschland'; if (!p.staatsang && !p.id) p.staatsang = '';
@@ -818,6 +824,7 @@ function viewDaten() {
       <button class="btn primary" onclick="pdSaveAction('${esc(upn)}')" ${kann ? '' : 'disabled'}>Speichern</button></div></div></div>`;
 }
 const pdSetupAction = () => act(async () => { await S.store.pdSetup(); S.pd = null; }, 'Bereich angelegt');
+const pdRecheck = () => { S.pd = null; render(); };
 function pdSaveAction(upn) {
   const v = k => ($('#pd-' + k)?.value || '').trim(), o = { upn };
   pdKeys().forEach(k => { o[k] = v(k); });
@@ -1053,6 +1060,7 @@ function tick() {
     S.viewUpn = me.upn;
     render();
     setInterval(tick, 1000);
+    if (!S.missing.length) setTimeout(() => loadPd(true), 300); // Persönliche Daten im Hintergrund vorladen
     if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => {});
   } catch (e) { renderFatal(e); }
 })();
