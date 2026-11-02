@@ -472,7 +472,7 @@ function renderSide() {
     <button class="iconbtn no-print" onclick="reload()" title="Daten neu laden" aria-label="Daten neu laden">${svg('refresh')}</button>
     ${CFG.demo ? '' : `<button class="iconbtn no-print" onclick="S.store.logout()" title="Abmelden" aria-label="Abmelden">${svg('logout')}</button>`}`;
   $('#appname').textContent = CFG.appName || 'Personal';
-  document.title = CFG.appName || 'Personal';
+  document.title = 'ProTax ' + (CFG.appName || 'Personal');
 }
 // Schwebender Timer unten rechts: laufende Sitzung + Tagessumme, Start/Stopp mit einem Klick
 function renderTimer() {
