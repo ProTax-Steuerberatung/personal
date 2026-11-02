@@ -1,7 +1,7 @@
 'use strict';
 /* Zeiterfassung ProTax – Oberfläche, Anmeldung (Microsoft 365) und Speicher (SharePoint-Listen über Microsoft Graph) */
 const CFG = window.ZE_CONFIG || {}, Z = window.ZC;
-const APP_VERSION = 'ProTax Personal v.1.4.1';
+const APP_VERSION = 'ProTax Personal v.1.5';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const WD = ['', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
@@ -1036,6 +1036,27 @@ function renderLogin(msg) {
     <p class="login-ver">${esc(APP_VERSION)}</p>
   </div>`;
 }
+// Nur am PC: Handy/Tablet werden abgewiesen (abschaltbar mit nurPC:false in config.js). Keine echte Sicherheitsgrenze.
+function istMobil() {
+  const ua = navigator.userAgent || '';
+  if (/Android|iPhone|iPad|iPod|Mobile|Windows Phone|BlackBerry|Opera Mini|IEMobile|Silk|Kindle/i.test(ua)) return true;
+  if (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) return true; // iPad mit „Desktop-Website“
+  const mm = q => window.matchMedia && matchMedia(q).matches;
+  return mm('(pointer: coarse)') && !mm('(any-pointer: fine)') && Math.min(screen.width, screen.height) < 820;
+}
+function renderNurPC() {
+  document.body.classList.add('login-mode');
+  $('#side').style.display = 'none';
+  const ico = d => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+  $('#main').innerHTML = `<div class="login">
+    <div class="login-ico">${ico('<rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M8 20h8M12 16v4"/>')}</div>
+    <h1>Nur am PC verfügbar</h1>
+    <p class="login-sub">${esc(CFG.appName || 'Personal')} kann aus Datenschutzgründen nur an einem Computer geöffnet werden.</p>
+    <ul class="login-feat"><li>${ico('<rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M8 20h8M12 16v4"/>')}<span>Bitte im Büro oder im Homeoffice am PC aufrufen: <b>${esc(location.host)}</b></span></li>
+      <li>${ico(ICON.monat)}<span>Zeiten unterwegs notieren und innerhalb von ${+CFG.korrekturFristTage || 7} Tagen am PC nachtragen</span></li></ul>
+    <p class="login-ver">${esc(APP_VERSION)}</p>
+  </div>`;
+}
 function renderFatal(e) {
   console.error(e);
   $('#main').innerHTML = `<div class="card"><div class="card-h"><div class="card-t">Start nicht möglich</div></div><div class="card-b"><div class="banner err">${esc(e.message || e)}</div>
@@ -1049,6 +1070,7 @@ function tick() {
 }
 (async () => {
   try {
+    if (CFG.nurPC !== false && istMobil()) return renderNurPC();
     S.store = CFG.demo ? new DemoStore() : new GraphStore();
     const me = await S.store.login();
     if (!me) return renderLogin();
