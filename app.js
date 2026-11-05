@@ -1,7 +1,7 @@
 'use strict';
 /* Zeiterfassung ProTax – Oberfläche, Anmeldung (Microsoft 365) und Speicher (SharePoint-Listen über Microsoft Graph) */
 const CFG = window.ZE_CONFIG || {}, Z = window.ZC;
-const APP_VERSION = 'ProTax Personal v.1.5';
+const APP_VERSION = 'ProTax Personal v.1.5.1';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const WD = ['', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
@@ -665,7 +665,7 @@ function saveBlock(id, upn) {
   if (!ende && datum !== today()) return toast('Ende fehlt', 'err');
   if (ende && ende === beginn) return toast('Beginn und Ende sind gleich', 'err');
   if (pp.fehler.length) return toast('Pausen nicht lesbar: ' + pp.fehler.join(', '), 'err');
-  if (!grund) return toast('Bitte eine Begründung angeben', 'err');
+  if (grund.replace(/\s/g, '').length < 5) return toast('Bitte eine aussagekräftige Begründung angeben (mind. 5 Zeichen)', 'err');
   const fields = { beginn, ende, pausen: pp.pausen, pauseMin: pmin, ort: v('ort'), bemerkung: v('bem') };
   closeModal();
   act(async () => {
@@ -681,7 +681,7 @@ function saveBlock(id, upn) {
   }, 'Gespeichert');
 }
 function stornoBlock(id) {
-  const grund = $('#ff-grund').value.trim(); if (!grund) return toast('Bitte eine Begründung für die Stornierung angeben', 'err');
+  const grund = $('#ff-grund').value.trim(); if (grund.replace(/\s/g, '').length < 5) return toast('Bitte eine aussagekräftige Begründung für die Stornierung angeben (mind. 5 Zeichen)', 'err');
   const b = S.buchungen.find(x => x.id === id); closeModal();
   act(async () => {
     const f = { status: 'storniert', grund: (b.grund ? b.grund + ' | ' : '') + stamp('Storno – ' + grund), korrVon: S.me.name, korrAm: new Date().toISOString() };

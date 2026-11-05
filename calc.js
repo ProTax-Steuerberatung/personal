@@ -151,8 +151,10 @@
       const urlaub = (ctx.abw || []).filter(a => zaehlt(a) && GUTSCHRIFT[a.art] && !a.halbtag);
       if (urlaub.length) W(`Arbeitszeit erfasst trotz ganztägiger Abwesenheit (${urlaub.map(a => a.art).join(', ')})`);
     }
-    (ctx.blocks || []).filter(b => b.nachtrag).forEach(b => I(`Nachtrag ${b.beginn}${b.ende ? '–' + b.ende : ''}${b.grund ? ': ' + b.grund : ''}`));
-    (ctx.blocks || []).filter(b => b.korrAm).forEach(b => I(`Korrigiert von ${b.korrVon || '?'} am ${new Date(b.korrAm).toLocaleString('de-DE')}`));
+    // letzter Eintrag aus dem Begründungs-Verlauf ("TT.MM.JJJJ HH:MM Name: Text | …") ohne Stempel
+    const letzterGrund = g => { const s = String(g || '').split(' | ').pop() || ''; const i = s.indexOf(': '); return (i > 0 && /^\d{2}\.\d{2}\.\d{4} /.test(s) ? s.slice(i + 2) : s).trim(); };
+    (ctx.blocks || []).filter(b => b.nachtrag).forEach(b => I(`Nachtrag ${b.beginn}${b.ende ? '–' + b.ende : ''} – Grund: ${letzterGrund(b.grund) || 'nicht angegeben'}`));
+    (ctx.blocks || []).filter(b => b.korrAm).forEach(b => I(`Korrigiert von ${b.korrVon || '?'} am ${new Date(b.korrAm).toLocaleString('de-DE')} – Grund: ${letzterGrund(b.grund) || 'nicht angegeben'}`));
     return c;
   }
   const ampel = checks => checks.some(x => x.l === 'err') ? 'red' : checks.some(x => x.l === 'warn') ? 'yellow' : 'green';
