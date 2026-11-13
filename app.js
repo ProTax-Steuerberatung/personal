@@ -1,7 +1,7 @@
 'use strict';
 /* Zeiterfassung ProTax – Oberfläche, Anmeldung (Microsoft 365) und Speicher (SharePoint-Listen über Microsoft Graph) */
 const CFG = window.ZE_CONFIG || {}, Z = window.ZC;
-const APP_VERSION = 'ProTax Personal v.1.5.1';
+const APP_VERSION = 'ProTax Personal v.1.5.2';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const WD = ['', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
@@ -105,16 +105,24 @@ class GraphStore {
     await this.pca.initialize();
     const r = await this.pca.handleRedirectPromise();
     this.account = r?.account || this.pca.getAllAccounts()[0] || null;
+    // Kein Konto im Cache, aber bekannt, wer hier zuletzt angemeldet war → still über die Microsoft-Sitzung anmelden
+    if (!this.account && this.hint()) { try { this.account = (await this.pca.ssoSilent({ scopes: this.scopes, loginHint: this.hint() })).account; } catch (e) { /* dann normal per Klick */ } }
     if (!this.account) return null;
+    try { localStorage.setItem('ze-last-upn', this.account.username); } catch (e) { }
     this.pca.setActiveAccount(this.account);
     return { upn: lc(this.account.username), name: this.account.name || this.account.username };
   }
-  loginRedirect() { return this.pca.loginRedirect({ scopes: this.scopes, prompt: 'select_account' }); }
-  logout() { return this.pca.logoutRedirect({ account: this.account }); }
+  hint() { try { return localStorage.getItem('ze-last-upn') || ''; } catch (e) { return ''; } }
+  // Mit bekanntem Konto direkt anmelden (keine Kontoauswahl); Microsoft nutzt die bestehende Sitzung, 2FA nur wenn diese abgelaufen ist
+  loginRedirect() { const h = this.hint(); return this.pca.loginRedirect(h ? { scopes: this.scopes, loginHint: h } : { scopes: this.scopes, prompt: 'select_account' }); }
+  logout() { try { localStorage.removeItem('ze-last-upn'); } catch (e) { } return this.pca.logoutRedirect({ account: this.account }); }
   async token(scopes) {
     try { return (await this.pca.acquireTokenSilent({ scopes, account: this.account })).accessToken; }
     catch (e) {
-      if (e instanceof msal.InteractionRequiredAuthError) { await this.pca.acquireTokenRedirect({ scopes, account: this.account }); return new Promise(() => {}); }
+      // Auch bei blockierten Drittanbieter-Cookies (stille Erneuerung im Hintergrund scheitert) per Weiterleitung erneuern statt Fehler zeigen
+      if (e instanceof msal.InteractionRequiredAuthError || /timeout|timed_out|third_party|iframe|no_network/i.test(e.errorCode || e.message || '')) {
+        await this.pca.acquireTokenRedirect({ scopes, account: this.account, loginHint: this.account?.username }); return new Promise(() => {});
+      }
       throw e;
     }
   }
