@@ -1,7 +1,7 @@
 'use strict';
 /* Zeiterfassung ProTax – Oberfläche, Anmeldung (Microsoft 365) und Speicher (SharePoint-Listen über Microsoft Graph) */
 const CFG = window.ZE_CONFIG || {}, Z = window.ZC;
-const APP_VERSION = 'ProTax Personal v.1.6';
+const APP_VERSION = 'ProTax Personal v.1.7';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const WD = ['', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
@@ -35,7 +35,7 @@ const LISTS = {
     upn: ['ZeUpn', 'text', true, 'E-Mail (Anmeldename)'], name: ['ZeName', 'text', false, 'Name'], wochenstunden: ['ZeWochenstunden', 'number', false, 'Wochenstunden'],
     arbeitstage: ['ZeArbeitstage', 'text', false, 'Arbeitstage (1=Mo … 7=So)'], urlaubstage: ['ZeUrlaubstage', 'number', false, 'Urlaubstage pro Jahr'],
     restVorjahr: ['ZeRestVorjahr', 'number', false, 'Resturlaub Vorjahr'], saldoStart: ['ZeSaldoStart', 'text', false, 'Saldo ab Datum'],
-    saldoStunden: ['ZeSaldoStunden', 'number', false, 'Saldo-Startwert (Stunden)'], eintritt: ['ZeEintritt', 'text', false, 'Eintritt'], austritt: ['ZeAustritt', 'text', false, 'Austritt'], leitung: ['ZeLeitung', 'bool', false, 'Leitung'],
+    saldoStunden: ['ZeSaldoStunden', 'number', false, 'Saldo-Startwert (Stunden)'], eintritt: ['ZeEintritt', 'text', false, 'Eintritt'], austritt: ['ZeAustritt', 'text', false, 'Austritt'], leitung: ['ZeLeitung', 'bool', false, 'Leitung'], ohneZeit: ['ZeOhneZeit', 'bool', false, 'Keine Zeiterfassung (Inhaber/in)'],
     akteDrive: ['ZeAkteDrive', 'text', false, 'Personalakte Bibliothek'], akteId: ['ZeAkteId', 'text', false, 'Personalakte Ordner'], eingangId: ['ZeEingangId', 'text', false, 'Personalakte Eingang'] } }
 };
 const AKTE = { name: 'ZE_Personalakte', kategorien: ['Vertrag & Nachträge', 'Zeugnisse & Qualifikationen', 'Bescheinigungen', 'Unterweisungen', 'Sonstiges'],
@@ -355,6 +355,9 @@ class DemoStore {
 }
 
 /* ======================= Zustand ======================= */
+// Personen ohne Zeiterfassung (z. B. Inhaberin): kein Stempeln, kein Urlaubskonto, nicht in Team-Auswertungen
+const zeitMa = () => S.ma.filter(m => !m.ohneZeit);
+const zeitUpn = upn => { const m = maBy(upn); return m && m.ohneZeit && S.leitung ? (zeitMa()[0] || {}).upn || upn : upn; };
 const S = { store: null, me: null, leitung: false, ma: [], buchungen: [], abw: [], loadedFrom: null, view: 'heute', month: today().slice(0, 7), viewUpn: null, info: null, missing: [], ort: (CFG.orte || ['Büro'])[0], busy: false, akte: null, pd: null };
 const myMa = () => S.ma.find(m => m.upn === S.me.upn);
 const maBy = upn => S.ma.find(m => m.upn === upn);
@@ -468,9 +471,9 @@ const initials = n => String(n || '?').split(/\s+/).filter(Boolean).map(x => x[0
 const VIEW_LABEL = { heute: 'Heute', monat: 'Monatsnachweis', abw: 'Abwesenheiten', daten: 'Persönliche Daten', akte: 'Personalakte', team: 'Team', stamm: 'Stammdaten' };
 function renderSide() {
   const offen = S.abw.filter(a => a.status === 'beantragt').length;
-  const items = [['heute'], ['monat'], ['abw'], ['daten'], ['akte']];
+  const m = myMa(), oz = m && m.ohneZeit;
+  const items = (oz ? (S.leitung ? [['monat'], ['abw']] : []) : [['heute'], ['monat'], ['abw']]).concat([['daten'], ['akte']]);
   if (S.leitung) items.push(['team', offen], ['stamm']);
-  const m = myMa();
   $('#side').innerHTML = `<div class="user"><div class="avatar">${esc(initials(m ? m.name : S.me.name))}</div><div><div class="n">${esc(m ? m.name : S.me.name)}</div><div class="r">${S.leitung ? 'Leitung' : 'Mitarbeiter/in'}</div></div></div>`
     + items.map(([v, n]) => `<div class="nav ${S.view === v ? 'on' : ''}" role="link" tabindex="0" onclick="go('${v}')" onkeydown="if(event.key==='Enter')go('${v}')">${svg(v)}<span>${VIEW_LABEL[v]}</span>${n ? `<span class="cnt">${n}</span>` : ''}</div>`).join('')
     + `<div class="ver">${esc(APP_VERSION)}</div>`;
@@ -486,7 +489,7 @@ function renderSide() {
 function renderTimer() {
   const el = $('#timer'); if (!el) return;
   const m = S.me && myMa();
-  if (!m || S.missing.length) { el.hidden = true; return; }
+  if (!m || m.ohneZeit || S.missing.length) { el.hidden = true; return; }
   const st = stempelStatus(S.me.upn), t = today();
   const row = Z.tagesZeile(m, t, dataFor(S.me.upn), CFG, t, nowMin());
   let lauf = '00:00:00';
@@ -505,6 +508,7 @@ function renderTimer() {
 }
 function render() {
   if (!S.me) return;
+  const mm = myMa(); if (mm && mm.ohneZeit && (S.view === 'heute' || (!S.leitung && (S.view === 'monat' || S.view === 'abw')))) S.view = S.leitung ? 'team' : 'daten';
   renderSide();
   if (S.missing.length && S.view !== 'stamm') { $('#main').innerHTML = viewMissing(); renderTimer(); return; }
   const v = { heute: viewHeute, monat: viewMonat, abw: viewAbw, daten: viewDaten, akte: viewAkte, team: viewTeam, stamm: viewStamm }[S.view] || viewHeute;
@@ -578,7 +582,7 @@ const fmtTage = n => (Math.round(n * 2) / 2).toLocaleString('de-DE');
 /* ---------- Monatsnachweis ---------- */
 function monthNav() {
   const [y, m] = S.month.split('-').map(Number);
-  const opts = S.leitung ? `<select class="inp" style="width:auto" onchange="S.viewUpn=this.value;render()">${S.ma.map(x => `<option value="${esc(x.upn)}" ${x.upn === S.viewUpn ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>` : '';
+  const opts = S.leitung ? `<select class="inp" style="width:auto" onchange="S.viewUpn=this.value;render()">${zeitMa().map(x => `<option value="${esc(x.upn)}" ${x.upn === S.viewUpn ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>` : '';
   return `<div class="row no-print">${opts}<button class="btn sm" onclick="shiftMonth(-1)">‹</button><b style="min-width:120px;text-align:center">${MONATE[m - 1]} ${y}</b><button class="btn sm" onclick="shiftMonth(1)">›</button></div>`;
 }
 async function shiftMonth(n) {
@@ -589,7 +593,7 @@ async function shiftMonth(n) {
   render();
 }
 function viewMonat() {
-  const upn = S.leitung ? (S.viewUpn || S.me.upn) : S.me.upn, m = maBy(upn);
+  const upn = S.leitung ? zeitUpn(S.viewUpn || S.me.upn) : S.me.upn, m = maBy(upn); if (S.leitung) S.viewUpn = upn;
   if (!m) return S.leitung && S.ma.length ? (S.viewUpn = S.ma[0].upn, viewMonat()) : noMa();
   const [y, mo] = S.month.split('-').map(Number), t = today();
   const data = dataFor(upn), mon = Z.monat(m, y, mo, data, CFG, t, nowMin());
@@ -709,17 +713,17 @@ async function verlauf(id) {
 
 /* ---------- Abwesenheiten ---------- */
 function viewAbw() {
-  const upn = S.leitung ? (S.viewUpn || S.me.upn) : S.me.upn, m = maBy(upn), y = +today().slice(0, 4);
+  const upn = S.leitung ? zeitUpn(S.viewUpn || S.me.upn) : S.me.upn, m0 = maBy(upn), m = m0 && !m0.ohneZeit ? m0 : null, y = +today().slice(0, 4);
   const ul = m ? Z.urlaub(m, y, S.abw, CFG) : null;
   const list = S.abw.filter(a => S.leitung || a.upn === S.me.upn).filter(a => (a.bis || a.von) >= (y - 1) + '-01-01').sort((a, b) => b.von.localeCompare(a.von));
   const badge = s => `<span class="badge ${{ genehmigt: 'b-ok', gemeldet: 'b-ok', beantragt: 'b-warn', abgelehnt: 'b-err', storniert: 'b-grey' }[s] || 'b-grey'}">${esc(s)}</span>`;
   return `${m ? `<div class="card"><div class="card-h"><div class="card-t">Urlaub ${y} · ${esc(m.name)}</div>
-    ${S.leitung ? `<select class="inp" style="width:auto" onchange="S.viewUpn=this.value;render()">${S.ma.map(x => `<option value="${esc(x.upn)}" ${x.upn === upn ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>` : ''}</div>
+    ${S.leitung ? `<select class="inp" style="width:auto" onchange="S.viewUpn=this.value;render()">${zeitMa().map(x => `<option value="${esc(x.upn)}" ${x.upn === upn ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>` : ''}</div>
     <div class="card-b"><div class="kv">
     <div class="stat"><div class="l">Anspruch inkl. Vorjahr</div><div class="v">${fmtTage(ul.anspruch)}</div></div>
     <div class="stat"><div class="l">Genehmigt</div><div class="v">${fmtTage(ul.genommen)}</div></div>
     <div class="stat"><div class="l">Beantragt</div><div class="v">${fmtTage(ul.beantragt)}</div></div>
-    <div class="stat"><div class="l">Rest</div><div class="v ${ul.rest < 0 ? 'neg' : ''}">${fmtTage(ul.rest)}</div></div></div></div></div>` : noMa()}
+    <div class="stat"><div class="l">Rest</div><div class="v ${ul.rest < 0 ? 'neg' : ''}">${fmtTage(ul.rest)}</div></div></div></div></div>` : m0 ? '' : noMa()}
   <div class="card"><div class="card-h"><div class="card-t">${S.leitung ? 'Abwesenheiten aller Mitarbeitenden' : 'Meine Abwesenheiten'}</div><button class="btn primary sm" onclick="abwForm()">+ Eintragen</button></div>
   ${list.length ? `<div class="tblwrap"><table class="tbl"><thead><tr>${S.leitung ? '<th>Mitarbeiter</th>' : ''}<th>Art</th><th>Zeitraum</th><th class="num">Arbeitstage</th><th>Status</th><th></th></tr></thead><tbody>
   ${list.map(a => { const mm = maBy(a.upn); const tage = mm ? Z.arbeitstageZaehlen(mm, a.von, a.bis || a.von, CFG, a.halbtag) : ''; return `<tr>${S.leitung ? `<td>${esc(a.name)}</td>` : ''}<td>${esc(a.art)}${a.bemerkung ? `<div class="muted sm">${esc(a.bemerkung)}</div>` : ''}</td>
@@ -734,7 +738,7 @@ function abwActions(a) {
   return out.join(' ');
 }
 function abwForm() {
-  const sel = S.leitung ? `<div class="f span2"><label>Mitarbeiter</label><select id="af-upn">${S.ma.map(x => `<option value="${esc(x.upn)}" ${x.upn === (S.viewUpn || S.me.upn) ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></div>` : '';
+  const sel = S.leitung ? `<div class="f span2"><label>Mitarbeiter</label><select id="af-upn">${zeitMa().map(x => `<option value="${esc(x.upn)}" ${x.upn === zeitUpn(S.viewUpn || S.me.upn) ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></div>` : '';
   modal(`<div class="card-h"><div class="card-t">Abwesenheit eintragen</div></div><div class="card-b"><div class="fg2">${sel}
     <div class="f span2"><label>Art</label><select id="af-art">${ARTEN.map(a => `<option>${a}</option>`).join('')}</select></div>
     <div class="f"><label>Von</label><input id="af-von" type="date" value="${today()}" oninput="abwTage()"></div>
@@ -936,7 +940,7 @@ function akteDeleteAction(upn, id) {
 function viewTeam() {
   const [y, mo] = S.month.split('-').map(Number), t = today();
   const ende = S.month + '-' + Z.pad(new Date(y, mo, 0).getDate()), bis = ende < t ? ende : Z.addDays(t, -1);
-  const rows = S.ma.filter(m => !m.austritt || m.austritt >= S.month + '-01').map(m => {
+  const rows = zeitMa().filter(m => !m.austritt || m.austritt >= S.month + '-01').map(m => {
     const data = dataFor(m.upn), mon = Z.monat(m, y, mo, data, CFG, t, nowMin()), st = stempelStatus(m.upn), ul = Z.urlaub(m, y, S.abw, CFG);
     const abwH = Z.abwAm(S.abw, m.upn, t).filter(Z.zaehlt);
     const heute = st.s === 'an' ? `<span class="badge b-ok">da seit ${esc(st.b.beginn)} · ${esc(st.b.ort)}</span>` : st.s === 'pause' ? `<span class="badge b-warn">Pause seit ${esc(st.seit)}</span>`
@@ -956,7 +960,7 @@ function viewTeam() {
 function csvTeam() {
   const [y, mo] = S.month.split('-').map(Number), t = today(), ende = S.month + '-' + Z.pad(new Date(y, mo, 0).getDate()), bis = ende < t ? ende : Z.addDays(t, -1);
   const q = v => '"' + String(v ?? '').replace(/"/g, '""') + '"', h = n => (Math.round(n / 60 * 100) / 100).toFixed(2).replace('.', ',');
-  const lines = S.ma.map(m => { const d = dataFor(m.upn), mon = Z.monat(m, y, mo, d, CFG, t, null), ul = Z.urlaub(m, y, S.abw, CFG);
+  const lines = zeitMa().map(m => { const d = dataFor(m.upn), mon = Z.monat(m, y, mo, d, CFG, t, null), ul = Z.urlaub(m, y, S.abw, CFG);
     return [m.name, h(mon.soll), h(mon.ist), h(mon.gut), h(mon.diff), h(Z.saldo(m, d, CFG, bis)), ul.genommen, ul.rest, mon.rot, mon.gelb].map(q).join(';'); });
   download(`Arbeitszeit_Team_${S.month}.csv`, '﻿' + [['Mitarbeiter', 'Soll (h)', 'Ist (h)', 'Gutschrift (h)', 'Differenz (h)', 'Saldo per ' + de(bis) + ' (h)', 'Urlaub genommen', 'Resturlaub', 'Tage rot', 'Tage gelb'].map(q).join(';'), ...lines].join('\r\n'), 'text/csv;charset=utf-8');
 }
@@ -973,7 +977,7 @@ function viewStamm() {
   if (S.missing.length) return setup;
   return `<div class="card"><div class="card-h"><div class="card-t">Mitarbeiter</div><button class="btn primary sm" onclick="maForm()">+ Neu</button></div>
   ${S.ma.length ? `<div class="tblwrap"><table class="tbl"><thead><tr><th>Name</th><th>Anmeldename</th><th class="num">h/Woche</th><th>Arbeitstage</th><th class="num">Urlaub</th><th>Saldo ab</th><th>Eintritt / Austritt</th><th></th></tr></thead><tbody>
-  ${S.ma.map(m => `<tr><td>${esc(m.name)}${m.leitung || (CFG.leitung || []).map(lc).includes(m.upn) || (S.store.isDemoLeitung && S.store.isDemoLeitung(m.upn)) ? ' <span class="badge b-info">Leitung</span>' : ''}</td><td class="sm">${esc(m.upn)}</td><td class="num">${m.wochenstunden ?? ''}</td>
+  ${S.ma.map(m => `<tr><td>${esc(m.name)}${m.leitung || (CFG.leitung || []).map(lc).includes(m.upn) || (S.store.isDemoLeitung && S.store.isDemoLeitung(m.upn)) ? ' <span class="badge b-info">Leitung</span>' : ''}${m.ohneZeit ? ' <span class="badge b-grey">ohne Zeiterfassung</span>' : ''}</td><td class="sm">${esc(m.upn)}</td><td class="num">${m.wochenstunden ?? ''}</td>
     <td class="sm">${esc(String(m.arbeitstage || '').split(',').map(x => WD[+x] || '').join(' '))}</td><td class="num">${m.urlaubstage ?? ''}${m.restVorjahr ? ' + ' + m.restVorjahr : ''}</td>
     <td class="sm">${de(m.saldoStart)}${m.saldoStunden ? ` (${m.saldoStunden > 0 ? '+' : ''}${String(m.saldoStunden).replace('.', ',')} h)` : ''}</td><td class="sm">${de(m.eintritt)}${m.austritt ? ' / ' + de(m.austritt) : ''}</td>
     <td style="text-align:right"><button class="btn sm" onclick="maForm('${m.id}')">Bearbeiten</button></td></tr>`).join('')}</tbody></table></div>`
@@ -995,13 +999,14 @@ function maForm(id) {
     <div class="f"><label>Saldo-Startwert in Stunden (z. B. 3,5 oder -2)</label><input id="mf-sw" value="${String(m.saldoStunden ?? 0).replace('.', ',')}"></div>
     <div class="f"><label>Eintritt</label><input id="mf-ein" type="date" value="${esc(m.eintritt)}"></div>
     <div class="f"><label>Austritt</label><input id="mf-aus" type="date" value="${esc(m.austritt)}"></div>
+    <label class="chk span2"><input type="checkbox" id="mf-ohnezeit" ${m.ohneZeit ? 'checked' : ''}> Keine Zeiterfassung (z. B. Inhaber/in) – kein Stempeln, kein Urlaubskonto, nicht in Team-Auswertungen</label>
     <label class="chk span2"><input type="checkbox" id="mf-leitung" ${m.leitung ? 'checked' : ''}> Leitung (Team-Übersicht, Genehmigungen, Stammdaten) – zusätzlich in SharePoint in die Gruppe „Besitzer“ aufnehmen</label>
   </div><div class="actions"><button class="btn" onclick="closeModal()">Abbrechen</button><button class="btn primary" onclick="saveMa(${id ? `'${id}'` : 'null'})">Speichern</button></div></div>`);
 }
 function saveMa(id) {
   const v = n => $('#mf-' + n).value.trim();
   const o = { name: v('name'), wochenstunden: +String(v('wh')).replace(',', '.') || 0, arbeitstage: [...document.querySelectorAll('.mf-at:checked')].map(x => x.value).join(','),
-    urlaubstage: +String(v('ut')).replace(',', '.') || 0, restVorjahr: +String(v('rv')).replace(',', '.') || 0, saldoStart: v('ss'), saldoStunden: +String(v('sw')).replace(',', '.') || 0, eintritt: v('ein'), austritt: v('aus'), leitung: $('#mf-leitung').checked };
+    urlaubstage: +String(v('ut')).replace(',', '.') || 0, restVorjahr: +String(v('rv')).replace(',', '.') || 0, saldoStart: v('ss'), saldoStunden: +String(v('sw')).replace(',', '.') || 0, eintritt: v('ein'), austritt: v('aus'), leitung: $('#mf-leitung').checked, ohneZeit: $('#mf-ohnezeit').checked };
   if (!id) o.upn = lc(v('upn'));
   if (!o.name) return toast('Name fehlt', 'err');
   if (!id && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(o.upn)) return toast('Anmeldename muss eine E-Mail-Adresse sein', 'err');
@@ -1010,6 +1015,7 @@ function saveMa(id) {
   if (!o.saldoStart) return toast('„Saldo ab Datum“ fehlt', 'err');
   closeModal();
   act(async () => {
+    if (S.store.ensureColumns && !S.store._maCols) { await S.store.ensureColumns('ma'); S.store._maCols = true; }
     if (id) { const m = S.ma.find(x => x.id === id); await S.store.update('ma', id, o, Object.assign({}, m, o)); Object.assign(m, o); }
     else { const n = await S.store.create('ma', o); S.ma.push(n); S.ma.sort((a, b) => a.name.localeCompare(b.name)); }
     if (o.saldoStart < S.loadedFrom) await ensureLoaded(o.saldoStart);
