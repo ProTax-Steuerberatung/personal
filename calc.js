@@ -91,7 +91,7 @@
   }
 
   // blocks: Buchungen eines Mitarbeiters an einem Tag (nicht storniert)
-  function tag(blocks, nowMin) {
+  function tag(blocks, nowMin, cfg) {
     const calc = blocks.map(b => ({ b, c: block(b, nowMin) })).filter(x => x.c.ok);
     const offen = calc.filter(x => x.c.offen);
     const fertig = calc.filter(x => !x.c.offen).sort((a, c) => a.c.beg - c.c.beg);
@@ -111,7 +111,15 @@
     const maxAbschnitt = pauschal > 0 ? null : seg.reduce((m, s) => Math.max(m, s[1] - s[0]), 0);
     const first = fertig.length ? fertig[0].c.beg : null;
     const last = fertig.length ? Math.max(...fertig.map(x => x.c.end)) : null;
-    return { ist, pauseGesamt, pauseAnr, maxAbschnitt, first, last, offen: offen.map(x => x.b), laufend: fertig.some(x => x.c.laufend), bloecke: fertig };
+    // Automatischer Pausenabzug (§ 4 ArbZG): fehlende Pause bis 30 min (> 6 h) bzw. 45 min (> 9 h) wird abgezogen,
+    // aber nie unter die jeweilige Grenze (6:10 h ohne Pause → 6:00 h). Nur für abgeschlossene Tage.
+    let autoPause = 0, istA = ist, pa = pauseAnr;
+    if (!(cfg && cfg.autoPause === false) && !fertig.some(x => x.c.laufend) && !offen.length) {
+      const a30 = istA > 360 ? Math.min(Math.max(0, 30 - pa), istA - 360) : 0; istA -= a30; pa += a30;
+      const a45 = istA > 540 ? Math.min(Math.max(0, 45 - pa), istA - 540) : 0; istA -= a45; pa += a45;
+      autoPause = a30 + a45;
+    }
+    return { ist: istA, istOhneAuto: ist, autoPause, pauseGesamt: pauseGesamt + autoPause, pauseAnr: pa, maxAbschnitt: autoPause ? null : maxAbschnitt, first, last, offen: offen.map(x => x.b), laufend: fertig.some(x => x.c.laufend), bloecke: fertig };
   }
 
   /* ---------- Soll & Abwesenheit ---------- */
@@ -134,6 +142,7 @@
   function pruefe(ctx) {
     const c = [], t = ctx.t, E = x => c.push({ l: 'err', t: x }), W = x => c.push({ l: 'warn', t: x }), I = x => c.push({ l: 'info', t: x });
     if (t.offen.length && !ctx.heute) E('Gehen fehlt – Buchung ist nicht abgeschlossen');
+    if (t.autoPause) I(`Pause ${t.autoPause} min automatisch abgezogen – erfasste Pause zu kurz (§ 4 ArbZG)`);
     if (!ctx.heute || !t.laufend) {
       if (t.ist > 600) E(`Arbeitszeit ${dur(t.ist)} h über 10 h (§ 3 ArbZG)`);
       else if (t.ist > 480) W(`Arbeitszeit ${dur(t.ist)} h über 8 h – Ausgleich im 6-Monats-Schnitt nötig`);
@@ -164,7 +173,7 @@
   function tagesZeile(ma, date, data, cfg, heuteIso, nowMin) {
     const blocks = data.buchungen.filter(b => b.upn === ma.upn && b.datum === date && b.status !== 'storniert');
     const heute = date === heuteIso;
-    const t = tag(blocks, heute ? nowMin : null);
+    const t = tag(blocks, heute ? nowMin : null, cfg);
     const soll = sollTag(ma, date, cfg);
     const abw = abwAm(data.abw, ma.upn, date);
     let gut = 0;
